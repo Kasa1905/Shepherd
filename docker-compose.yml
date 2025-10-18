@@ -63,7 +63,7 @@ services:
       - "27017:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=admin_password123
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_INITDB_ROOT_PASSWORD:-change_me}
       - MONGO_INITDB_DATABASE=shepherd
     volumes:
       # Persistent data storage for primary
@@ -102,7 +102,7 @@ services:
       - "27018:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=admin_password123
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_INITDB_ROOT_PASSWORD:-change_me}
       - MONGO_INITDB_DATABASE=shepherd
     volumes:
       # Persistent data storage for secondary 1
@@ -137,7 +137,7 @@ services:
       - "27019:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=admin_password123
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_INITDB_ROOT_PASSWORD:-change_me}
       - MONGO_INITDB_DATABASE=shepherd
     volumes:
       # Persistent data storage for secondary 2
@@ -173,12 +173,12 @@ services:
       - "8081:8081"
     environment:
       - ME_CONFIG_MONGODB_ADMINUSERNAME=admin
-      - ME_CONFIG_MONGODB_ADMINPASSWORD=admin_password123
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=${MONGO_INITDB_ROOT_PASSWORD:-change_me}
       # Connect to primary node for admin operations
       - ME_CONFIG_MONGODB_SERVER=mongo-primary
       - ME_CONFIG_MONGODB_PORT=27017
       - ME_CONFIG_BASICAUTH_USERNAME=admin
-      - ME_CONFIG_BASICAUTH_PASSWORD=admin123
+      - ME_CONFIG_BASICAUTH_PASSWORD=${ME_CONFIG_BASICAUTH_PASSWORD:-change_me}
     depends_on:
       mongo-primary:
         condition: service_healthy
