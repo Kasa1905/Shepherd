@@ -104,7 +104,7 @@ jobs:
       - name: Start MongoDB replica set
         run: |
           echo "🚀 Starting MongoDB replica set for backup verification..."
-          docker-compose up -d mongo-primary mongo-secondary-1 mongo-secondary-2
+          docker compose up -d mongo-primary mongo-secondary-1 mongo-secondary-2
           
           # Wait for containers to be ready
           timeout 180 bash -c '
@@ -117,10 +117,10 @@ jobs:
       - name: Initialize replica set
         run: |
           echo "🔧 Initializing MongoDB replica set..."
-          docker-compose up mongo-init
+          docker compose up mongo-init
           
           # Wait for initialization to complete
-          docker-compose logs mongo-init
+          docker compose logs mongo-init
           
           # Verify replica set status
           timeout 60 bash -c '

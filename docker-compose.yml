@@ -26,7 +26,7 @@ services:
       - FLASK_ENV=production
       - FLASK_DEBUG=False
       # Updated connection string for 3-node replica set
-      - MONGODB_URI=mongodb://shepherd_user:shepherd_password123@mongo-primary:27017,mongo-secondary-1:27018,mongo-secondary-2:27019/shepherd?authSource=shepherd&replicaSet=shepherd-rs&readPreference=secondaryPreferred
+      - MONGODB_URI=${MONGODB_URI:-mongodb://shepherd_user:change_me@mongo-primary:27017,mongo-secondary-1:27018,mongo-secondary-2:27019/shepherd?authSource=shepherd&replicaSet=shepherd-rs&readPreference=secondaryPreferred}
       - DATABASE_NAME=shepherd
     depends_on:
       mongo-primary:
@@ -73,7 +73,8 @@ services:
       - ./mongodb-keyfile/mongo-keyfile:/etc/mongodb-keyfile:ro
       # Mount initialization scripts for localhost execution
       - ./init-mongo-replica.sh:/scripts/init-mongo-replica.sh:ro
-      - ./init-mongo.js:/scripts/init-mongo.js:ro
+      - ./init-mongo.safe.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+
     networks:
       - shepherd-network
     restart: unless-stopped
