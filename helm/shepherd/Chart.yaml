@@ -1,0 +1,22 @@
+apiVersion: v2
+name: shepherd
+description: A Helm chart for Shepherd Configuration Management System
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+home: https://github.com/your-org/shepherd
+sources:
+  - https://github.com/your-org/shepherd
+maintainers:
+  - name: Shepherd Team
+    email: team@shepherd.io
+keywords:
+  - configuration
+  - management
+  - cms
+  - mongodb
+  - flask
+  - observability
+annotations:
+  category: Configuration Management
+dependencies: []

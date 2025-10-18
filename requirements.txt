@@ -1,0 +1,62 @@
+# Core web framework
+Flask==2.3.3
+
+# Database driver for Python
+pymongo==4.5.0
+
+# Environment variable management
+python-dotenv==1.0.0
+
+# Enhanced date/time handling
+python-dateutil==2.8.2
+
+# CORS support for API access from frontend applications
+flask-cors==4.0.0
+
+# Production WSGI server
+gunicorn==21.2.0
+
+# ======================================================================
+# Observability & Monitoring (Phase 9)
+# ======================================================================
+
+# Prometheus metrics collection and exposition
+prometheus-client==0.19.0
+
+# HTTP library for webhook dispatch (if not already present)
+requests==2.31.0
+
+# Retry library with exponential backoff for webhook reliability
+tenacity==8.2.3
+
+# JSON formatter for structured logging
+python-json-logger==2.0.7
+
+# ======================================================================
+# Infrastructure & DevOps (Phase 9)
+# ======================================================================
+
+# AWS SDK for Python (for Terraform state management or AWS integrations)
+boto3==1.34.0
+
+# Kubernetes Python client (for Helm chart testing)
+kubernetes==28.1.0
+
+# ======================================================================
+# Development & Testing
+# ======================================================================
+
+# Testing framework
+pytest==7.4.2
+
+# Development and CI/CD Dependencies
+pytest-cov==4.1.0        # Test coverage reporting
+black==23.12.1            # Code formatter (PEP 8 compliant)
+flake8==7.0.0             # Code linter for style and quality
+bandit==1.7.6             # Security linter for Python code
+safety==3.0.1             # Dependency vulnerability scanner
+
+# Additional optional development tools
+pytest-xdist==3.5.0      # Parallel test execution (optional)
+pytest-mock==3.12.0      # Mocking support for tests (optional)
+coverage[toml]==7.4.0     # Coverage configuration via pyproject.toml (optional)

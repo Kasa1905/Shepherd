@@ -1,0 +1,567 @@
+{% extends 'base.html' %}
+
+{% block title %}Compare Versions - {{ config_id }}{% endblock %}
+
+{% block content %}
+<div class="compare-container">
+    <!-- Page Header -->
+    <header class="page-header">
+        <h1>Compare Versions: {{ config_id }}</h1>
+        <p class="subtitle">Version {{ version1.version }} vs Version {{ version2.version }}</p>
+        
+        <!-- Breadcrumb -->
+        <nav aria-label="breadcrumb">
+            <ul class="breadcrumb">
+                <li><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
+                <li><a href="{{ url_for('view_config', config_id=config_id) }}">{{ config_id }}</a></li>
+                <li><a href="{{ url_for('config_history', config_id=config_id) }}">Version History</a></li>
+                <li>Compare</li>
+            </ul>
+        </nav>
+    </header>
+
+    <!-- Navigation Actions -->
+    <div class="navigation-actions">
+        <a href="{{ url_for('config_history', config_id=config_id) }}" class="secondary outline">
+            ← Back to History
+        </a>
+        <a href="{{ url_for('view_config', config_id=config_id) }}" class="secondary">
+            View Current Details
+        </a>
+    </div>
+
+    <!-- Flash Messages -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ 'danger' if category == 'error' else category }}" role="alert">
+                    {{ message }}
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <!-- Version Metadata Comparison -->
+    <div class="metadata-comparison">
+        <h2>Version Metadata</h2>
+        <div class="two-column-grid">
+            <!-- Left Column: Version 1 -->
+            <div class="version-metadata">
+                <h3>
+                    <span class="version-badge older">Version {{ version1.version }}</span>
+                </h3>
+                <dl class="metadata-list">
+                    <dt>Updated At</dt>
+                    <dd>{{ version1.updated_at }}</dd>
+                    
+                    <dt>Updated By</dt>
+                    <dd>{{ version1.updated_by or 'Unknown' }}</dd>
+                    
+                    <dt>Change Notes</dt>
+                    <dd class="change-notes">{{ version1.change_notes or 'No notes provided' }}</dd>
+                    
+                    <dt>App Name</dt>
+                    <dd>{{ version1.app_name }}</dd>
+                    
+                    <dt>Environment</dt>
+                    <dd>{{ version1.environment }}</dd>
+                </dl>
+            </div>
+            
+            <!-- Right Column: Version 2 -->
+            <div class="version-metadata">
+                <h3>
+                    <span class="version-badge newer">Version {{ version2.version }}</span>
+                </h3>
+                <dl class="metadata-list">
+                    <dt>Updated At</dt>
+                    <dd>{{ version2.updated_at }}</dd>
+                    
+                    <dt>Updated By</dt>
+                    <dd>{{ version2.updated_by or 'Unknown' }}</dd>
+                    
+                    <dt>Change Notes</dt>
+                    <dd class="change-notes">{{ version2.change_notes or 'No notes provided' }}</dd>
+                    
+                    <dt>App Name</dt>
+                    <dd>{{ version2.app_name }}</dd>
+                    
+                    <dt>Environment</dt>
+                    <dd>{{ version2.environment }}</dd>
+                </dl>
+            </div>
+        </div>
+    </div>
+
+    <!-- Visual Diff Section -->
+    <div class="diff-section">
+        <h2>Configuration Changes</h2>
+        <p class="diff-legend">
+            <span class="legend-item">
+                <span class="color-box added"></span> Green = added
+            </span>
+            <span class="legend-item">
+                <span class="color-box removed"></span> Red = removed
+            </span>
+            <span class="legend-item">
+                <span class="color-box modified"></span> Yellow = modified
+            </span>
+        </p>
+        <div id="diff-container" class="diff-container">
+            <p>Loading diff visualization...</p>
+        </div>
+    </div>
+
+    <!-- Raw JSON Comparison -->
+    <details class="raw-comparison">
+        <summary><strong>View Raw JSON Side-by-Side</strong></summary>
+        <div class="raw-json-container">
+            <div class="two-column-grid">
+                <div class="json-column">
+                    <h4>Version {{ version1.version }} Settings</h4>
+                    <pre><code class="json-code">{{ version1.settings | tojson(indent=2) }}</code></pre>
+                </div>
+                <div class="json-column">
+                    <h4>Version {{ version2.version }} Settings</h4>
+                    <pre><code class="json-code">{{ version2.settings | tojson(indent=2) }}</code></pre>
+                </div>
+            </div>
+        </div>
+    </details>
+
+    <!-- Action Buttons -->
+    <div class="action-buttons">
+        {% if g.user and g.user.role in ['editor', 'admin'] and version1.version < version2.version %}
+        <button type="button" 
+                class="warning" 
+                onclick="showRollbackModal({{ version1.version }})">
+            Rollback to Version {{ version1.version }}
+        </button>
+        {% endif %}
+        
+        <a href="{{ url_for('view_config', config_id=config_id) }}" class="secondary">
+            View Version {{ version1.version }} Details
+        </a>
+        <a href="{{ url_for('view_config', config_id=config_id) }}" class="secondary">
+            View Version {{ version2.version }} Details
+        </a>
+        <a href="{{ url_for('config_history', config_id=config_id) }}" class="secondary outline">
+            Back to History
+        </a>
+    </div>
+</div>
+
+<!-- Rollback Confirmation Modal -->
+{% if g.user and g.user.role in ['editor', 'admin'] %}
+<div id="rollbackModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>Confirm Rollback</h3>
+        </div>
+        <div class="modal-body">
+            <p>This will create a new version with settings from version <span id="rollbackTargetVersion"></span>.</p>
+            <form id="rollbackForm" method="POST">
+                <div class="form-group">
+                    <label for="rollback_change_notes">Change Notes (Optional)</label>
+                    <textarea id="rollback_change_notes" 
+                              name="change_notes" 
+                              rows="3"
+                              placeholder="Explain why you're rolling back..."></textarea>
+                </div>
+            </form>
+        </div>
+        <div class="modal-actions">
+            <button type="button" onclick="hideRollbackModal()" class="secondary outline">
+                Cancel
+            </button>
+            <button type="button" onclick="confirmRollback()" class="warning">
+                Confirm Rollback
+            </button>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Include jsondiffpatch library -->
+<script src="https://cdn.jsdelivr.net/npm/jsondiffpatch@0.5.0/dist/jsondiffpatch.umd.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jsondiffpatch@0.5.0/dist/formatters-styles/html.css">
+
+<script>
+    // Version data for diff calculation
+    const version1Settings = {{ version1.settings | tojson }};
+    const version2Settings = {{ version2.settings | tojson }};
+    const configId = "{{ config_id }}";
+    
+    // Initialize diff visualization
+    document.addEventListener('DOMContentLoaded', function() {
+        try {
+            // Create jsondiffpatch instance
+            const jsondiffpatch = window.jsondiffpatch.create({
+                objectHash: function(obj, index) {
+                    return obj.name || obj.id || obj._id || '$$index:' + index;
+                },
+                arrays: {
+                    detectMove: true,
+                    includeValueOnMove: false
+                },
+                textDiff: {
+                    minLength: 60
+                }
+            });
+            
+            // Compute delta
+            const delta = jsondiffpatch.diff(version1Settings, version2Settings);
+            
+            // Format as HTML
+            const diffContainer = document.getElementById('diff-container');
+            
+            if (delta) {
+                const html = jsondiffpatch.formatters.html.format(delta, version1Settings);
+                diffContainer.innerHTML = html;
+            } else {
+                diffContainer.innerHTML = '<p class="no-changes">No differences detected between these versions.</p>';
+            }
+            
+        } catch (error) {
+            console.error('Error generating diff:', error);
+            document.getElementById('diff-container').innerHTML = 
+                '<p class="error">Error generating diff visualization: ' + error.message + '</p>';
+        }
+    });
+    
+    // Rollback modal functions
+    function showRollbackModal(targetVersion) {
+        document.getElementById('rollbackTargetVersion').textContent = targetVersion;
+        document.getElementById('rollbackForm').action = 
+            `/rollback/${configId}/${targetVersion}`;
+        document.getElementById('rollbackModal').style.display = 'flex';
+    }
+    
+    function hideRollbackModal() {
+        document.getElementById('rollbackModal').style.display = 'none';
+        document.getElementById('rollback_change_notes').value = '';
+    }
+    
+    function confirmRollback() {
+        document.getElementById('rollbackForm').submit();
+    }
+    
+    // Close modal on outside click
+    document.getElementById('rollbackModal').addEventListener('click', function(e) {
+        if (e.target === this) {
+            hideRollbackModal();
+        }
+    });
+</script>
+
+<style>
+    .compare-container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 1rem;
+    }
+    
+    .page-header {
+        margin-bottom: 2rem;
+    }
+    
+    .page-header h1 {
+        margin: 0 0 0.5rem 0;
+        color: var(--primary-color);
+    }
+    
+    .subtitle {
+        color: var(--secondary-color);
+        margin: 0 0 1rem 0;
+    }
+    
+    .breadcrumb {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+    }
+    
+    .breadcrumb li:not(:last-child)::after {
+        content: " > ";
+        margin-left: 0.5rem;
+        color: var(--secondary-color);
+    }
+    
+    .navigation-actions {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 2rem;
+        flex-wrap: wrap;
+    }
+    
+    .two-column-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2rem;
+    }
+    
+    .metadata-comparison {
+        background: white;
+        border-radius: 8px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+    
+    .version-metadata h3 {
+        margin: 0 0 1rem 0;
+    }
+    
+    .version-badge {
+        padding: 0.25rem 0.75rem;
+        border-radius: 4px;
+        font-size: 0.875rem;
+        font-weight: 500;
+    }
+    
+    .version-badge.older {
+        background: #fef3c7;
+        color: #92400e;
+    }
+    
+    .version-badge.newer {
+        background: #dcfce7;
+        color: #166534;
+    }
+    
+    .metadata-list {
+        margin: 0;
+    }
+    
+    .metadata-list dt {
+        font-weight: 500;
+        margin: 0.75rem 0 0.25rem 0;
+    }
+    
+    .metadata-list dt:first-child {
+        margin-top: 0;
+    }
+    
+    .metadata-list dd {
+        margin: 0 0 0.5rem 0;
+        color: var(--secondary-color);
+    }
+    
+    .change-notes {
+        font-style: italic;
+        background: #f8fafc;
+        padding: 0.5rem;
+        border-radius: 4px;
+        border-left: 3px solid #e2e8f0;
+    }
+    
+    .diff-section {
+        background: white;
+        border-radius: 8px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+    
+    .diff-legend {
+        display: flex;
+        gap: 1.5rem;
+        margin-bottom: 1rem;
+        flex-wrap: wrap;
+    }
+    
+    .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.875rem;
+    }
+    
+    .color-box {
+        width: 16px;
+        height: 16px;
+        border-radius: 2px;
+        border: 1px solid rgba(0, 0, 0, 0.1);
+    }
+    
+    .color-box.added {
+        background: #dcfce7;
+    }
+    
+    .color-box.removed {
+        background: #fef2f2;
+    }
+    
+    .color-box.modified {
+        background: #fef3c7;
+    }
+    
+    .diff-container {
+        border: 1px solid #e5e7eb;
+        border-radius: 4px;
+        padding: 1rem;
+        background: #fafafa;
+        overflow-x: auto;
+    }
+    
+    .no-changes {
+        text-align: center;
+        color: var(--secondary-color);
+        font-style: italic;
+        margin: 2rem 0;
+    }
+    
+    .error {
+        color: #dc2626;
+        background: #fef2f2;
+        padding: 1rem;
+        border-radius: 4px;
+        border: 1px solid #fecaca;
+    }
+    
+    .raw-comparison {
+        background: white;
+        border-radius: 8px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+    
+    .raw-comparison summary {
+        cursor: pointer;
+        margin-bottom: 1rem;
+    }
+    
+    .raw-json-container {
+        margin-top: 1rem;
+    }
+    
+    .json-column h4 {
+        margin: 0 0 0.5rem 0;
+        font-size: 1rem;
+    }
+    
+    .json-code {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 4px;
+        padding: 1rem;
+        font-size: 0.875rem;
+        line-height: 1.4;
+        overflow-x: auto;
+        max-height: 400px;
+        overflow-y: auto;
+    }
+    
+    .action-buttons {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+        margin-bottom: 2rem;
+    }
+    
+    /* Modal Styles */
+    .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+    }
+    
+    .modal-content {
+        background: white;
+        border-radius: 8px;
+        padding: 0;
+        max-width: 500px;
+        width: 90%;
+        max-height: 90vh;
+        overflow-y: auto;
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+    }
+    
+    .modal-header {
+        padding: 1.5rem 1.5rem 0 1.5rem;
+    }
+    
+    .modal-header h3 {
+        margin: 0;
+        color: var(--primary-color);
+    }
+    
+    .modal-body {
+        padding: 1.5rem;
+    }
+    
+    .modal-actions {
+        padding: 0 1.5rem 1.5rem 1.5rem;
+        display: flex;
+        gap: 1rem;
+        justify-content: flex-end;
+    }
+    
+    .form-group {
+        margin-bottom: 1rem;
+    }
+    
+    .form-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+    
+    /* jsondiffpatch overrides */
+    .jsondiffpatch-delta {
+        font-family: 'Courier New', monospace;
+        font-size: 0.875rem;
+    }
+    
+    .jsondiffpatch-added .jsondiffpatch-property-name {
+        color: #166534;
+    }
+    
+    .jsondiffpatch-deleted .jsondiffpatch-property-name {
+        color: #dc2626;
+    }
+    
+    .jsondiffpatch-modified .jsondiffpatch-property-name {
+        color: #92400e;
+    }
+    
+    @media (max-width: 768px) {
+        .two-column-grid {
+            grid-template-columns: 1fr;
+            gap: 1rem;
+        }
+        
+        .navigation-actions {
+            flex-direction: column;
+        }
+        
+        .action-buttons {
+            flex-direction: column;
+        }
+        
+        .diff-legend {
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        
+        .modal-content {
+            width: 95%;
+        }
+        
+        .modal-actions {
+            flex-direction: column;
+        }
+    }
+</style>
+{% endblock %}

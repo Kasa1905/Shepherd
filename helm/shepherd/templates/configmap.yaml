@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "shepherd.fullname" . }}-config
+  labels:
+    {{- include "shepherd.labels" . | nindent 4 }}
+data:
+  # Application configuration
+  {{- range $key, $value := .Values.app.env }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  
+  # Webhook configuration
+  {{- if .Values.webhooks.urls }}
+  WEBHOOK_URLS: {{ join "," .Values.webhooks.urls | quote }}
+  {{- end }}
+  
+  # Logging configuration
+  {{- if .Values.logging.structured }}
+  LOG_FORMAT: "json"
+  {{- end }}
+  
+  # Monitoring configuration
+  {{- if .Values.monitoring.prometheus.enabled }}
+  METRICS_ENABLED: "True"
+  METRICS_PATH: {{ .Values.monitoring.prometheus.path | quote }}
+  {{- end }}
+  
+  # Health check configuration
+  {{- if .Values.monitoring.healthCheck.enabled }}
+  HEALTH_CHECK_ENDPOINT: {{ .Values.monitoring.healthCheck.path | quote }}
+  {{- end }}
+  
+  # SSL/TLS Configuration for external MongoDB (e.g., DocumentDB)
+  {{- if and .Values.mongodb.external.enabled .Values.mongodb.external.ssl .Values.mongodb.external.sslCA }}
+  SSL_CA_CERTS: {{ .Values.mongodb.external.sslCA | quote }}
+  {{- end }}
+  
+  # MongoDB connection string
+  MONGODB_URI: {{ include "shepherd.mongodbConnectionString" . | quote }}

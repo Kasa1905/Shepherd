@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+
+{% block title %}{{ config.config_id }} - Details{% endblock %}
+
+{% block content %}
+{% if config %}
+<nav class="breadcrumb">
+    <a href="/">Dashboard</a> > Config Details
+</nav>
+
+<div class="page-header">
+    <h1>{{ config.config_id }}</h1>
+    <div class="actions" style="margin-top: 1rem;">
+        <a href="/" role="button" class="secondary outline">← Back to Dashboard</a>
+    </div>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=True) %}
+    {% if messages %}
+        {% for category, message in messages %}
+        <div class="alert {% if category == 'error' %}alert-error{% else %}alert-success{% endif %}">
+            {{ message }}
+        </div>
+        {% endfor %}
+    {% endif %}
+{% endwith %}
+
+<div class="config-metadata">
+    <h2>Configuration Metadata</h2>
+    <dl>
+        <dt>Config ID</dt>
+        <dd><strong>{{ config.config_id }}</strong></dd>
+        
+        <dt>App Name</dt>
+        <dd>{{ config.app_name }}</dd>
+        
+        <dt>Environment</dt>
+        <dd>{{ config.environment }}</dd>
+        
+        <dt>Current Version</dt>
+        <dd><span class="version-badge">Version {{ config.version }}</span></dd>
+        
+        <dt>Created At</dt>
+        <dd>{{ config.created_at }}</dd>
+        
+        <dt>Last Updated</dt>
+        <dd>{{ config.updated_at }}</dd>
+        
+        <dt>Updated By</dt>
+        <dd class="updated-by">{{ config.updated_by or 'Unknown' }}</dd>
+        
+        <dt>Change Notes</dt>
+        <dd class="change-notes">
+            {% if config.change_notes %}
+                "{{ config.change_notes }}"
+            {% else %}
+                <em>No notes provided</em>
+            {% endif %}
+        </dd>
+    </dl>
+</div>
+
+<div>
+    <h2>Configuration Settings (JSON)</h2>
+    <pre class="json-code">{{ settings_json }}</pre>
+</div>
+
+<div class="actions" style="margin-top: 2rem;">
+    <a href="/edit/{{ config.config_id }}" role="button">Edit Configuration</a>
+    <a href="/history/{{ config.config_id }}" role="button" class="secondary">View Version History</a>
+    <a href="/" role="button" class="secondary outline">Back to Dashboard</a>
+</div>
+
+<div style="margin-top: 3rem; padding-top: 2rem; border-top: 1px solid #e2e8f0;">
+    <h3>API Information</h3>
+    <p>You can also access this configuration via the REST API:</p>
+    <div class="json-code">
+GET /api/config/{{ config.config_id }}
+PUT /api/config/{{ config.config_id }}
+GET /api/config/history/{{ config.config_id }}
+    </div>
+</div>
+
+{% else %}
+<div class="empty-state" style="text-align: center; padding: 3rem 0;">
+    <h2>Configuration Not Found</h2>
+    <p>The requested configuration could not be found.</p>
+    <div style="margin-top: 1.5rem;">
+        <a href="/" role="button">Return to Dashboard</a>
+    </div>
+</div>
+{% endif %}
+
+<style>
+    .updated-by {
+        font-weight: 500;
+        color: var(--primary-color);
+    }
+    
+    .change-notes {
+        font-style: italic;
+        color: var(--secondary-color);
+        background: #f8fafc;
+        padding: 0.75rem;
+        border-radius: 4px;
+        border-left: 3px solid #e2e8f0;
+        margin-top: 0.25rem;
+        line-height: 1.5;
+    }
+    
+    .change-notes em {
+        color: #9ca3af;
+    }
+    
+    .metadata-field {
+        margin-bottom: 1rem;
+    }
+    
+    .metadata-field dt {
+        font-weight: 500;
+        margin-bottom: 0.25rem;
+    }
+    
+    .metadata-field dd {
+        margin: 0 0 0.5rem 0;
+    }
+</style>
+{% endblock %}

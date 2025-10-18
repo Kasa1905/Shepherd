@@ -1,0 +1,391 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      deployment_strategy:
+        description: 'Deployment strategy'
+        required: true
+        default: 'rolling'
+        type: choice
+        options:
+        - rolling
+        - blue-green
+        - canary
+      image_tag:
+        description: 'Docker image tag to deploy'
+        required: false
+        default: 'latest'
+        type: string
+      auto_promote:
+        description: 'Auto-promote canary deployment'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+  DOCKER_IMAGE_NAME: shepherd-cms
+
+jobs:
+  lint:
+    name: Code Quality & Linting
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Run flake8 critical errors check
+      run: |
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        
+    - name: Run flake8 with warnings
+      run: |
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+        
+    - name: Run black format check
+      run: |
+        black --check .
+      continue-on-error: true
+
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-security-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-security-
+          ${{ runner.os }}-pip-
+          
+    - name: Install security tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install bandit safety
+        
+    - name: Run Bandit security scan
+      run: |
+        bandit -r . -f json -o bandit-report.json
+      continue-on-error: true
+      
+    - name: Run Safety dependency check
+      run: |
+        safety check --json
+      continue-on-error: true
+      
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11']
+        
+    services:
+      mongodb:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-test-${{ matrix.python-version }}-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-test-${{ matrix.python-version }}-
+          ${{ runner.os }}-pip-test-
+          ${{ runner.os }}-pip-
+          
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Set environment variables for tests
+      run: |
+        echo "MONGODB_URI=mongodb://localhost:27017/" >> $GITHUB_ENV
+        echo "DATABASE_NAME=test_shepherd" >> $GITHUB_ENV
+        
+    - name: Run pytest with coverage
+      run: |
+        pytest test_shepherd.py -v --cov=. --cov-report=xml --cov-report=html
+        
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      if: matrix.python-version == '3.11'
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+        
+    - name: Upload coverage HTML report
+      uses: actions/upload-artifact@v3
+      if: matrix.python-version == '3.11'
+      with:
+        name: coverage-report
+        path: htmlcov/
+
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [lint, security, test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: docker.io/${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+          
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64
+
+  push-ghcr:
+    name: Push to GitHub Container Registry
+    runs-on: ubuntu-latest
+    needs: [lint, security, test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Extract metadata for GHCR
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ghcr.io/${{ github.repository_owner }}/shepherd
+        tags: |
+          type=ref,event=branch
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+          
+    - name: Build and push to GHCR
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build, push-ghcr]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+        
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: 'v3.12.0'
+        
+    - name: Configure kubeconfig for staging
+      run: |
+        mkdir -p ~/.kube
+        echo '${{ secrets.KUBECONFIG_STAGING }}' | base64 -d > ~/.kube/config
+        chmod 600 ~/.kube/config
+        
+    - name: Deploy to Staging
+      run: |
+        chmod +x ./scripts/deploy.sh
+        ./scripts/deploy.sh \
+          --namespace staging \
+          --release shepherd \
+          --values helm/shepherd/values-staging.yaml \
+          --wait \
+          --timeout 600 \
+          --yes
+          
+    - name: Run smoke tests
+      run: |
+        # Basic smoke tests after deployment
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=shepherd -n staging --timeout=300s
+        kubectl get pods -n staging -l app.kubernetes.io/name=shepherd
+        
+    - name: Post deployment status
+      if: always()
+      run: |
+        echo "Staging deployment completed with status: ${{ job.status }}"
+        # Add Slack/Teams notification here if needed
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: github.event_name == 'workflow_dispatch'
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+        
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: 'v3.12.0'
+        
+    - name: Configure kubeconfig for production
+      run: |
+        mkdir -p ~/.kube
+        echo '${{ secrets.KUBECONFIG_PRODUCTION }}' | base64 -d > ~/.kube/config
+        chmod 600 ~/.kube/config
+        
+    - name: Deploy with Rolling Update
+      if: github.event.inputs.deployment_strategy == 'rolling' || github.event.inputs.deployment_strategy == ''
+      run: |
+        chmod +x ./scripts/deploy.sh
+        ./scripts/deploy.sh \
+          --namespace production \
+          --release shepherd \
+          --values helm/shepherd/values-prod.yaml \
+          --timeout 900 \
+          --yes
+    
+    - name: Deploy with Blue/Green
+      if: github.event.inputs.deployment_strategy == 'blue-green'
+      run: |
+        chmod +x ./scripts/deploy-blue-green.sh
+        ./scripts/deploy-blue-green.sh \
+          --namespace production \
+          --image ${{ github.event.inputs.image_tag || 'latest' }} \
+          --auto
+    
+    - name: Deploy with Canary
+      if: github.event.inputs.deployment_strategy == 'canary'
+      run: |
+        chmod +x ./scripts/canary-deploy.sh
+        ARGS="--namespace production --image ${{ github.event.inputs.image_tag || 'latest' }}"
+        if [[ "${{ github.event.inputs.auto_promote }}" == "true" ]]; then ARGS+=" --auto"; fi
+        ./scripts/canary-deploy.sh $ARGS
+          
+    - name: Run comprehensive smoke tests
+      run: |
+        # Comprehensive smoke tests for production
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=shepherd -n production --timeout=300s
+        kubectl get pods -n production -l app.kubernetes.io/name=shepherd
+        
+        # Test health endpoint
+        POD_NAME=$(kubectl get pods -n production -l app.kubernetes.io/name=shepherd -o jsonpath='{.items[0].metadata.name}')
+        kubectl exec -n production $POD_NAME -- curl -f http://localhost:5000/api/health
+        
+    - name: Send deployment notification
+      if: always()
+      run: |
+        echo "Production deployment completed with status: ${{ job.status }}"
+        echo "Strategy: ${{ github.event.inputs.deployment_strategy || 'rolling' }}"
+        echo "Image: ${{ github.event.inputs.image_tag || 'latest' }}"
+        # Add notification webhook here if configured

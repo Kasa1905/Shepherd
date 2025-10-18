@@ -1,0 +1,257 @@
+{{- if and .Values.mongodb.internal.enabled .Values.backup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "shepherd.fullname" . }}-mongodb-backup
+  labels:
+    {{- include "shepherd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb-backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            {{- include "shepherd.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: mongodb-backup
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
+          initContainers:
+          # Wait for MongoDB to be ready
+          - name: wait-for-mongodb
+            image: "{{ .Values.mongodb.internal.image.registry }}/{{ .Values.mongodb.internal.image.repository }}:{{ .Values.mongodb.internal.image.tag }}"
+            imagePullPolicy: {{ .Values.mongodb.internal.image.pullPolicy }}
+            command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Waiting for MongoDB replica set to be ready..."
+              while ! mongosh --uri "${MONGODB_URI}" --eval "rs.status().myState" --quiet 2>/dev/null | grep -E "1|2"; do
+                echo "MongoDB not ready, waiting..."
+                sleep 10
+              done
+              echo "MongoDB replica set is ready"
+            env:
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shepherd.fullname" . }}-secret
+                  key: mongodb-uri
+          containers:
+          - name: mongodb-backup
+            image: "{{ .Values.backup.image.registry }}/{{ .Values.backup.image.repository }}:{{ .Values.backup.image.tag }}"
+            imagePullPolicy: {{ .Values.backup.image.pullPolicy }}
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              
+              # Configuration
+              BACKUP_DIR="/backups"
+              TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+              BACKUP_NAME="shepherd_backup_${TIMESTAMP}"
+              BACKUP_PATH="${BACKUP_DIR}/${BACKUP_NAME}"
+              
+              echo "Starting MongoDB backup: ${BACKUP_NAME}"
+              echo "Backup path: ${BACKUP_PATH}"
+              
+              # Create backup directory
+              mkdir -p "${BACKUP_PATH}"
+              
+              # Perform backup using mongodump
+              mongodump \
+                --uri="${MONGODB_URI}" \
+                --out="${BACKUP_PATH}" \
+                --gzip \
+                --numParallelCollections=4
+              
+              if [ $? -eq 0 ]; then
+                echo "Backup completed successfully"
+                
+                # Create backup metadata
+                cat > "${BACKUP_PATH}/backup_info.json" <<EOF
+              {
+                "backup_name": "${BACKUP_NAME}",
+                "timestamp": "${TIMESTAMP}",
+                "date": "$(date -Iseconds)",
+                "database": "${MONGODB_DATABASE}",
+                "replica_set": "${REPLICA_SET_NAME}",
+                "backup_type": "full",
+                "compression": "gzip"
+              }
+              EOF
+                
+                # Calculate backup size
+                BACKUP_SIZE=$(du -sh "${BACKUP_PATH}" | cut -f1)
+                echo "Backup size: ${BACKUP_SIZE}"
+                
+                # Verify backup integrity
+                echo "Verifying backup integrity..."
+                for bson_file in $(find "${BACKUP_PATH}" -name "*.bson.gz"); do
+                  if ! gzip -t "${bson_file}"; then
+                    echo "ERROR: Backup file is corrupted: ${bson_file}"
+                    exit 1
+                  fi
+                done
+                echo "Backup integrity check passed"
+                
+                {{- if .Values.backup.destination.s3.enabled }}
+                # Upload to S3
+                echo "Uploading backup to S3..."
+                aws configure set aws_access_key_id "${AWS_ACCESS_KEY_ID}"
+                aws configure set aws_secret_access_key "${AWS_SECRET_ACCESS_KEY}"
+                aws configure set default.region "${AWS_REGION}"
+                
+                aws s3 sync "${BACKUP_PATH}" "s3://${S3_BUCKET}/backups/${BACKUP_NAME}/" --storage-class STANDARD_IA
+                
+                if [ $? -eq 0 ]; then
+                  echo "Backup uploaded to S3 successfully"
+                else
+                  echo "ERROR: Failed to upload backup to S3"
+                  exit 1
+                fi
+                {{- end }}
+                
+                {{- if .Values.backup.destination.gcs.enabled }}
+                # Upload to Google Cloud Storage
+                echo "Uploading backup to GCS..."
+                echo "${GCS_SERVICE_ACCOUNT_KEY}" | base64 -d > /tmp/gcs-key.json
+                export GOOGLE_APPLICATION_CREDENTIALS="/tmp/gcs-key.json"
+                
+                gsutil -m cp -r "${BACKUP_PATH}" "gs://${GCS_BUCKET}/backups/"
+                
+                if [ $? -eq 0 ]; then
+                  echo "Backup uploaded to GCS successfully"
+                  rm -f /tmp/gcs-key.json
+                else
+                  echo "ERROR: Failed to upload backup to GCS"
+                  rm -f /tmp/gcs-key.json
+                  exit 1
+                fi
+                {{- end }}
+                
+                echo "Backup process completed successfully"
+                
+              else
+                echo "ERROR: Backup failed"
+                exit 1
+              fi
+            env:
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shepherd.fullname" . }}-secret
+                  key: mongodb-uri
+            - name: MONGODB_DATABASE
+              value: {{ .Values.mongodb.internal.auth.database | quote }}
+            - name: REPLICA_SET_NAME
+              value: {{ .Values.mongodb.internal.replicaSet.name | quote }}
+            {{- if .Values.backup.destination.s3.enabled }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shepherd.fullname" . }}-backup-secret
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shepherd.fullname" . }}-backup-secret
+                  key: aws-secret-access-key
+            - name: AWS_REGION
+              value: {{ .Values.backup.destination.s3.region | quote }}
+            - name: S3_BUCKET
+              value: {{ .Values.backup.destination.s3.bucket | quote }}
+            {{- end }}
+            {{- if .Values.backup.destination.gcs.enabled }}
+            - name: GCS_SERVICE_ACCOUNT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shepherd.fullname" . }}-backup-secret
+                  key: gcs-service-account-key
+            - name: GCS_BUCKET
+              value: {{ .Values.backup.destination.gcs.bucket | quote }}
+            {{- end }}
+            resources:
+              {{- toYaml .Values.backup.resources | nindent 14 }}
+            volumeMounts:
+            - name: backup-storage
+              mountPath: /backups
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              runAsNonRoot: true
+              capabilities:
+                drop:
+                - ALL
+          # Cleanup old backups
+          - name: backup-cleanup
+            image: "{{ .Values.mongodb.internal.image.registry }}/{{ .Values.mongodb.internal.image.repository }}:{{ .Values.mongodb.internal.image.tag }}"
+            imagePullPolicy: {{ .Values.mongodb.internal.image.pullPolicy }}
+            command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Cleaning up old backups..."
+              
+              # Remove backups older than retention period
+              find /backups -type d -name "shepherd_backup_*" -mtime +{{ .Values.backup.retention.days }} -exec rm -rf {} + || true
+              
+              echo "Backup cleanup completed"
+              
+              # Show remaining backups
+              echo "Remaining backups:"
+              ls -la /backups/ || true
+            volumeMounts:
+            - name: backup-storage
+              mountPath: /backups
+            resources:
+              limits:
+                cpu: 100m
+                memory: 128Mi
+              requests:
+                cpu: 50m
+                memory: 64Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              runAsNonRoot: true
+              capabilities:
+                drop:
+                - ALL
+          volumes:
+          - name: backup-storage
+            persistentVolumeClaim:
+              claimName: {{ include "shepherd.fullname" . }}-backup-pvc
+---
+# PVC for backup storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "shepherd.fullname" . }}-backup-pvc
+  labels:
+    {{- include "shepherd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb-backup
+spec:
+  accessModes:
+  - ReadWriteOnce
+  {{- if .Values.backup.storage.storageClass }}
+  {{- if (eq "-" .Values.backup.storage.storageClass) }}
+  storageClassName: ""
+  {{- else }}
+  storageClassName: {{ .Values.backup.storage.storageClass | quote }}
+  {{- end }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.storage.size }}
+
+{{- end }}

@@ -1,0 +1,358 @@
+{% extends 'base.html' %}
+
+{% block title %}Create Configuration - Shepherd CMS{% endblock %}
+
+{% block content %}
+<div class="create-container">
+    <!-- Page Header -->
+    <header class="page-header">
+        <h1>Create New Configuration</h1>
+        <p class="subtitle">Define a new configuration with initial settings (version 1)</p>
+        
+        <!-- Breadcrumb -->
+        <nav aria-label="breadcrumb">
+            <ul class="breadcrumb">
+                <li><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
+                <li>Create Configuration</li>
+            </ul>
+        </nav>
+    </header>
+
+    <!-- Flash Messages -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ 'danger' if category == 'error' else category }}" role="alert">
+                    {{ message }}
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <!-- Configuration Form -->
+    <div class="form-container">
+        <form method="POST" action="{{ url_for('create_config_ui') }}" id="createForm">
+            <!-- Config ID Field -->
+            <div class="form-group">
+                <label for="config_id">Configuration ID <span class="required">*</span></label>
+                <input type="text" 
+                       id="config_id" 
+                       name="config_id" 
+                       required 
+                       autofocus
+                       pattern="[a-z0-9_-]+"
+                       placeholder="e.g., twitter_bot_v2_prod"
+                       value="{{ form_data.config_id if form_data else '' }}">
+                <small>Unique identifier for this configuration. Use lowercase, underscores, and hyphens.</small>
+            </div>
+
+            <!-- App Name Field -->
+            <div class="form-group">
+                <label for="app_name">Application Name <span class="required">*</span></label>
+                <input type="text" 
+                       id="app_name" 
+                       name="app_name" 
+                       required
+                       placeholder="e.g., TwitterBot"
+                       value="{{ form_data.app_name if form_data else '' }}">
+                <small>Logical application or service name</small>
+            </div>
+
+            <!-- Environment Field -->
+            <div class="form-group">
+                <label for="environment">Environment <span class="required">*</span></label>
+                <select id="environment" name="environment" required>
+                    <option value="">Select environment...</option>
+                    <option value="development" {{ 'selected' if form_data and form_data.environment == 'development' else '' }}>Development</option>
+                    <option value="staging" {{ 'selected' if form_data and form_data.environment == 'staging' else '' }}>Staging</option>
+                    <option value="production" {{ 'selected' if form_data and form_data.environment == 'production' else '' }}>Production</option>
+                    <option value="testing" {{ 'selected' if form_data and form_data.environment == 'testing' else '' }}>Testing</option>
+                </select>
+                <small>Deployment environment for this configuration</small>
+            </div>
+
+            <!-- Settings Field -->
+            <div class="form-group">
+                <label for="settings">Configuration Settings (JSON) <span class="required">*</span></label>
+                <textarea id="settings" 
+                          name="settings" 
+                          rows="20" 
+                          required
+                          class="json-code"
+                          placeholder='{"key": "value", "nested": {"setting": "example"}}'>{{ form_data.settings if form_data else '' }}</textarea>
+                <small>Enter valid JSON configuration data</small>
+            </div>
+
+            <!-- Change Notes Field -->
+            <div class="form-group">
+                <label for="change_notes">Change Notes</label>
+                <textarea id="change_notes" 
+                          name="change_notes" 
+                          rows="3"
+                          placeholder="Describe the purpose of this configuration...">{{ form_data.change_notes if form_data else '' }}</textarea>
+                <small>Optional notes about this configuration (recommended)</small>
+            </div>
+
+            <!-- Form Actions -->
+            <div class="form-actions">
+                <button type="submit" class="primary">Create Configuration</button>
+                <a href="{{ url_for('dashboard') }}" class="secondary outline">Cancel</a>
+            </div>
+        </form>
+    </div>
+
+    <!-- Schema Templates Section -->
+    <div class="schema-templates">
+        <h2>Schema Templates & Examples</h2>
+        <p>Click a template below to copy example JSON to your clipboard</p>
+        
+        {% for template_name, template_data in schema_templates.items() %}
+        <details class="template-card">
+            <summary>
+                <strong>{{ template_name.replace('_', ' ').title() }}</strong>
+                {% if template_name == 'database' %}
+                    - Database connection settings
+                {% elif template_name == 'api_service' %}
+                    - API service configuration
+                {% elif template_name == 'feature_flags' %}
+                    - Feature flags and toggles
+                {% elif template_name == 'cache' %}
+                    - Cache configuration
+                {% elif template_name == 'logging' %}
+                    - Logging configuration
+                {% endif %}
+            </summary>
+            <div class="template-content">
+                <pre><code class="template-code">{{ template_data | tojson(indent=2) }}</code></pre>
+                <button type="button" 
+                        class="copy-button secondary outline" 
+                        onclick="copyTemplate('{{ template_name }}')">
+                    Copy to Clipboard
+                </button>
+            </div>
+        </details>
+        {% endfor %}
+    </div>
+
+    <!-- Instructions Panel -->
+    <div class="instructions">
+        <h3>Instructions</h3>
+        <ul>
+            <li>Ensure config_id is unique across all configurations</li>
+            <li>Use valid JSON format for settings (proper quotes, commas, brackets)</li>
+            <li>Add descriptive change notes to help track configuration purpose</li>
+            <li>You can edit and create new versions after creation</li>
+        </ul>
+    </div>
+</div>
+
+<!-- JavaScript -->
+<script>
+    // Store template data for copying
+    const templates = {{ schema_templates | tojson }};
+    
+    // JSON validation on form submit
+    document.getElementById('createForm').addEventListener('submit', function(e) {
+        const settingsField = document.getElementById('settings');
+        const settingsValue = settingsField.value.trim();
+        
+        if (!settingsValue) {
+            alert('Settings field cannot be empty');
+            e.preventDefault();
+            return;
+        }
+        
+        try {
+            JSON.parse(settingsValue);
+        } catch (error) {
+            alert('Invalid JSON format: ' + error.message);
+            e.preventDefault();
+            settingsField.focus();
+            return;
+        }
+    });
+    
+    // Copy template to clipboard
+    function copyTemplate(templateName) {
+        const templateData = templates[templateName];
+        const jsonString = JSON.stringify(templateData, null, 2);
+        
+        navigator.clipboard.writeText(jsonString).then(function() {
+            // Show success message
+            const button = event.target;
+            const originalText = button.textContent;
+            button.textContent = 'Copied!';
+            button.style.background = '#22c55e';
+            button.style.color = 'white';
+            
+            setTimeout(function() {
+                button.textContent = originalText;
+                button.style.background = '';
+                button.style.color = '';
+            }, 2000);
+            
+            // Optional: Paste into settings textarea
+            const settingsField = document.getElementById('settings');
+            if (settingsField.value.trim() === '') {
+                settingsField.value = jsonString;
+            }
+        }).catch(function(err) {
+            console.error('Failed to copy: ', err);
+            alert('Failed to copy to clipboard');
+        });
+    }
+</script>
+
+<style>
+    .create-container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 1rem;
+    }
+    
+    .page-header {
+        margin-bottom: 2rem;
+    }
+    
+    .page-header h1 {
+        margin: 0 0 0.5rem 0;
+        color: var(--primary-color);
+    }
+    
+    .subtitle {
+        color: var(--secondary-color);
+        margin: 0 0 1rem 0;
+    }
+    
+    .breadcrumb {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        gap: 0.5rem;
+    }
+    
+    .breadcrumb li:not(:last-child)::after {
+        content: " > ";
+        margin-left: 0.5rem;
+        color: var(--secondary-color);
+    }
+    
+    .required {
+        color: #dc2626;
+    }
+    
+    .form-container {
+        background: white;
+        border-radius: 8px;
+        padding: 2rem;
+        margin-bottom: 2rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+    
+    .form-group {
+        margin-bottom: 1.5rem;
+    }
+    
+    .form-group label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
+    
+    .form-group small {
+        display: block;
+        margin-top: 0.25rem;
+        color: var(--secondary-color);
+        font-size: 0.875rem;
+    }
+    
+    .json-code {
+        font-family: 'Courier New', monospace;
+        font-size: 0.9rem;
+        line-height: 1.4;
+    }
+    
+    .form-actions {
+        display: flex;
+        gap: 1rem;
+        margin-top: 2rem;
+    }
+    
+    .schema-templates {
+        margin-bottom: 2rem;
+    }
+    
+    .template-card {
+        margin-bottom: 1rem;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    .template-card summary {
+        padding: 1rem;
+        background: #f9fafb;
+        cursor: pointer;
+        font-weight: 500;
+    }
+    
+    .template-card summary:hover {
+        background: #f3f4f6;
+    }
+    
+    .template-content {
+        padding: 1rem;
+    }
+    
+    .template-code {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 4px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+        font-size: 0.875rem;
+        overflow-x: auto;
+    }
+    
+    .copy-button {
+        font-size: 0.875rem;
+        padding: 0.5rem 1rem;
+    }
+    
+    .instructions {
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+        border-radius: 8px;
+        padding: 1.5rem;
+    }
+    
+    .instructions h3 {
+        margin: 0 0 1rem 0;
+        color: var(--primary-color);
+    }
+    
+    .instructions ul {
+        margin: 0;
+        padding-left: 1.5rem;
+    }
+    
+    .instructions li {
+        margin-bottom: 0.5rem;
+    }
+    
+    @media (max-width: 768px) {
+        .form-actions {
+            flex-direction: column;
+        }
+        
+        .template-content {
+            padding: 0.75rem;
+        }
+        
+        .template-code {
+            font-size: 0.8rem;
+        }
+    }
+</style>
+{% endblock %}

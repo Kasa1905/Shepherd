@@ -1,0 +1,509 @@
+name: Backup Verification
+
+on:
+  schedule:
+    # Run backup verification daily at 3 AM UTC
+    - cron: '0 3 * * *'
+    # Run comprehensive backup verification weekly on Sundays at 4 AM UTC
+    - cron: '0 4 * * 0'
+  
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to verify backups for'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - docker-compose
+        - kubernetes
+        - aws
+      verification_type:
+        description: 'Type of backup verification to run'
+        required: true
+        default: 'basic'
+        type: choice
+        options:
+        - basic
+        - comprehensive
+        - restore-test
+      cleanup_old_backups:
+        description: 'Clean up old backups during verification'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  # Backup configuration
+  BACKUP_RETENTION_DAYS: 30
+  BACKUP_DIR: /opt/shepherd/backups
+  
+  # MongoDB configuration
+  MONGODB_HOST: localhost:27017
+  DATABASE_NAME: shepherd_cms
+  
+  # AWS configuration
+  AWS_REGION: us-east-1
+  AWS_BACKUP_REGION: us-west-2
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backup-scripts-changed: ${{ steps.changes.outputs.backup-scripts }}
+      backup-config-changed: ${{ steps.changes.outputs.backup-config }}
+      should-run: ${{ steps.should-run.outputs.result }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check for changes
+        uses: dorny/paths-filter@v2
+        id: changes
+        with:
+          filters: |
+            backup-scripts:
+              - 'scripts/backup-*.sh'
+              - 'scripts/test-*.sh'
+            backup-config:
+              - 'terraform/**/backup-automation.tf'
+              - 'helm/**/mongodb-backup-cronjob.yaml'
+              - 'docker-compose.yml'
+              - '.github/workflows/backup-verify.yml'
+
+      - name: Determine if backup verification should run
+        id: should-run
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo "result=true" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "result=true" >> $GITHUB_OUTPUT
+          elif [[ "${{ steps.changes.outputs.backup-scripts }}" == "true" || "${{ steps.changes.outputs.backup-config }}" == "true" ]]; then
+            echo "result=true" >> $GITHUB_OUTPUT
+          else
+            echo "result=false" >> $GITHUB_OUTPUT
+          fi
+
+  verify-docker-compose:
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: |
+      needs.detect-changes.outputs.should-run == 'true' && 
+      (github.event.inputs.environment == 'all' || github.event.inputs.environment == 'docker-compose' || github.event.inputs.environment == '')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Start MongoDB replica set
+        run: |
+          echo "🚀 Starting MongoDB replica set for backup verification..."
+          docker-compose up -d mongo-primary mongo-secondary-1 mongo-secondary-2
+          
+          # Wait for containers to be ready
+          timeout 180 bash -c '
+            until docker ps --filter "name=mongo-primary" --filter "health=healthy" --format "table {{.Names}}" | grep -q mongo-primary; do
+              echo "Waiting for MongoDB primary to be healthy..."
+              sleep 5
+            done
+          '
+
+      - name: Initialize replica set
+        run: |
+          echo "🔧 Initializing MongoDB replica set..."
+          docker-compose up mongo-init
+          
+          # Wait for initialization to complete
+          docker-compose logs mongo-init
+          
+          # Verify replica set status
+          timeout 60 bash -c '
+            until docker exec mongo-primary mongosh --eval "rs.status()" --quiet | grep -q "PRIMARY"; do
+              echo "Waiting for primary election..."
+              sleep 5
+            done
+          '
+
+      - name: Create test data for backup verification
+        run: |
+          echo "📝 Creating test data for backup verification..."
+          
+          # Insert test documents
+          docker exec mongo-primary mongosh --eval '
+            use shepherd_cms;
+            db.backup_verification_test.insertMany([
+              {
+                id: "backup-test-" + new Date().toISOString(),
+                type: "github-actions-test",
+                created_at: new Date(),
+                data: "Sample configuration for backup verification"
+              },
+              {
+                id: "backup-test-config-1",
+                name: "test-config-1",
+                environment: "test",
+                value: "backup-verification-value-1"
+              },
+              {
+                id: "backup-test-config-2", 
+                name: "test-config-2",
+                environment: "test",
+                value: "backup-verification-value-2"
+              }
+            ]);
+            
+            print("Inserted test documents:");
+            db.backup_verification_test.find().forEach(printjson);
+          '
+
+      - name: Create backup for verification
+        run: |
+          echo "💾 Creating backup for verification..."
+          
+          # Create backup directory
+          sudo mkdir -p ${{ env.BACKUP_DIR }}
+          sudo chmod 755 ${{ env.BACKUP_DIR }}
+          
+          # Create backup
+          backup_name="github_actions_backup_$(date +%Y%m%d_%H%M%S)"
+          echo "Creating backup: $backup_name"
+          
+          docker exec mongo-primary mongodump \
+            --host mongo-primary:27017 \
+            --db shepherd_cms \
+            --out "/tmp/$backup_name"
+          
+          # Copy backup from container to host
+          docker cp mongo-primary:/tmp/$backup_name ${{ env.BACKUP_DIR }}/
+          
+          # Compress backup
+          tar -czf ${{ env.BACKUP_DIR }}/$backup_name.tar.gz -C ${{ env.BACKUP_DIR }} $backup_name
+          rm -rf ${{ env.BACKUP_DIR }}/$backup_name
+          
+          echo "✅ Backup created: $backup_name.tar.gz"
+          echo "BACKUP_NAME=$backup_name" >> $GITHUB_ENV
+
+      - name: Run backup verification script
+        run: |
+          echo "🔍 Running backup verification script..."
+          
+          # Make script executable
+          chmod +x scripts/backup-verify.sh
+          
+          # Set environment variables for the script
+          export BACKUP_DIR="${{ env.BACKUP_DIR }}"
+          export MONGODB_HOST="${{ env.MONGODB_HOST }}"
+          export DATABASE_NAME="${{ env.DATABASE_NAME }}"
+          export RETENTION_DAYS="${{ env.BACKUP_RETENTION_DAYS }}"
+          export ENVIRONMENTS="docker-compose"
+          
+          # Run verification based on input type
+          if [[ "${{ github.event.inputs.verification_type }}" == "restore-test" ]]; then
+            echo "Running restore test..."
+            ./scripts/backup-verify.sh test-restore
+          elif [[ "${{ github.event.inputs.verification_type }}" == "comprehensive" ]]; then
+            echo "Running comprehensive verification..."
+            ./scripts/backup-verify.sh verify
+            ./scripts/backup-verify.sh test-restore
+            ./scripts/backup-verify.sh report
+          else
+            echo "Running basic verification..."
+            ./scripts/backup-verify.sh verify-docker
+          fi
+
+      - name: Verify restored data integrity
+        if: github.event.inputs.verification_type == 'restore-test' || github.event.inputs.verification_type == 'comprehensive'
+        run: |
+          echo "🔎 Verifying restored data integrity..."
+          
+          # Check if test data exists after restore
+          test_count=$(docker exec mongo-primary mongosh --eval '
+            use shepherd_cms;
+            db.backup_verification_test.countDocuments({type: "github-actions-test"});
+          ' --quiet)
+          
+          if [[ "$test_count" -gt 0 ]]; then
+            echo "✅ Data integrity verification passed: $test_count test documents found"
+          else
+            echo "❌ Data integrity verification failed: no test documents found"
+            exit 1
+          fi
+
+      - name: Clean up old backups
+        if: github.event.inputs.cleanup_old_backups == 'true'
+        run: |
+          echo "🧹 Cleaning up old backups..."
+          ./scripts/backup-verify.sh cleanup
+
+      - name: Upload backup verification results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-verification-docker-results
+          path: |
+            scripts/backup-verify.log
+            scripts/backup-status-*.txt
+          retention-days: 30
+
+  verify-kubernetes:
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: |
+      needs.detect-changes.outputs.should-run == 'true' && 
+      (github.event.inputs.environment == 'all' || github.event.inputs.environment == 'kubernetes' || github.event.inputs.environment == '')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Kubernetes tools
+        run: |
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          
+          # Install helm
+          curl https://get.helm.sh/helm-v3.12.0-linux-amd64.tar.gz -o helm.tar.gz
+          tar -zxvf helm.tar.gz
+          sudo mv linux-amd64/helm /usr/local/bin/helm
+
+      - name: Set up kind cluster
+        uses: helm/kind-action@v1.8.0
+        with:
+          cluster_name: backup-test-cluster
+          kubectl_version: v1.28.0
+
+      - name: Deploy MongoDB for testing
+        run: |
+          echo "🚀 Deploying MongoDB to Kubernetes cluster..."
+          
+          # Add MongoDB Helm repo
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+          
+          # Deploy MongoDB replica set
+          helm install mongodb bitnami/mongodb \
+            --set architecture=replicaset \
+            --set replicaCount=3 \
+            --set auth.enabled=true \
+            --set auth.rootPassword=admin123 \
+            --set auth.username=shepherd \
+            --set auth.password=shepherd123 \
+            --set auth.database=shepherd_cms \
+            --wait --timeout=10m
+
+      - name: Run Kubernetes backup verification
+        run: |
+          echo "🔍 Running Kubernetes backup verification..."
+          
+          # Make script executable
+          chmod +x scripts/backup-verify.sh
+          
+          # Set environment variables
+          export ENVIRONMENTS="kubernetes"
+          
+          # Run verification
+          if [[ "${{ github.event.inputs.verification_type }}" == "comprehensive" ]]; then
+            ./scripts/backup-verify.sh verify-k8s
+            ./scripts/backup-verify.sh report
+          else
+            ./scripts/backup-verify.sh verify-k8s
+          fi
+
+      - name: Upload Kubernetes verification results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-verification-k8s-results
+          path: |
+            scripts/backup-verify.log
+            scripts/backup-status-*.txt
+          retention-days: 30
+
+  verify-aws:
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: |
+      needs.detect-changes.outputs.should-run == 'true' && 
+      (github.event.inputs.environment == 'all' || github.event.inputs.environment == 'aws' || github.event.inputs.environment == '')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run AWS backup verification
+        run: |
+          echo "🔍 Running AWS DocumentDB backup verification..."
+          
+          # Make script executable
+          chmod +x scripts/backup-verify.sh
+          
+          # Set environment variables
+          export ENVIRONMENTS="aws"
+          export AWS_DEFAULT_REGION="${{ env.AWS_REGION }}"
+          
+          # Run verification
+          if [[ "${{ github.event.inputs.verification_type }}" == "comprehensive" ]]; then
+            ./scripts/backup-verify.sh verify-aws
+            ./scripts/backup-verify.sh report
+          else
+            ./scripts/backup-verify.sh verify-aws
+          fi
+
+      - name: Verify cross-region backup replication
+        run: |
+          echo "🌍 Verifying cross-region backup replication..."
+          
+          # Check backups in primary region
+          primary_backups=$(aws backup list-backup-jobs \
+            --region ${{ env.AWS_REGION }} \
+            --by-resource-type DocumentDB \
+            --query 'BackupJobs[?State==`COMPLETED`] | length(@)' \
+            --output text)
+          
+          # Check backups in DR region
+          dr_backups=$(aws backup list-backup-jobs \
+            --region ${{ env.AWS_BACKUP_REGION }} \
+            --by-resource-type DocumentDB \
+            --query 'BackupJobs[?State==`COMPLETED`] | length(@)' \
+            --output text)
+          
+          echo "Primary region (${{ env.AWS_REGION }}) backups: $primary_backups"
+          echo "DR region (${{ env.AWS_BACKUP_REGION }}) backups: $dr_backups"
+          
+          if [[ $dr_backups -gt 0 ]]; then
+            echo "✅ Cross-region backup replication verified"
+          else
+            echo "⚠️ No backups found in DR region - check replication configuration"
+          fi
+
+      - name: Upload AWS verification results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-verification-aws-results
+          path: |
+            scripts/backup-verify.log
+            scripts/backup-status-*.txt
+          retention-days: 30
+
+  generate-report:
+    runs-on: ubuntu-latest
+    needs: [verify-docker-compose, verify-kubernetes, verify-aws]
+    if: always() && needs.detect-changes.outputs.should-run == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all verification results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: backup-verification-*-results
+          merge-multiple: true
+
+      - name: Generate comprehensive report
+        run: |
+          echo "📊 Generating comprehensive backup verification report..."
+          
+          # Create report
+          cat > backup-verification-summary.md << EOF
+          # Backup Verification Report
+          
+          **Date**: $(date -u)
+          **Workflow**: ${{ github.workflow }}
+          **Run ID**: ${{ github.run_id }}
+          **Environment**: ${{ github.event.inputs.environment || 'all' }}
+          **Verification Type**: ${{ github.event.inputs.verification_type || 'basic' }}
+          
+          ## Summary
+          
+          | Environment | Status | Details |
+          |-------------|--------|---------|
+          EOF
+          
+          # Add results for each environment
+          if [[ -f backup-verify.log ]]; then
+            if grep -q "Docker backup summary" backup-verify.log; then
+              docker_status=$(grep "Docker backup summary" backup-verify.log | tail -n1 || echo "Unknown")
+              echo "| Docker Compose | ✅ Completed | $docker_status |" >> backup-verification-summary.md
+            fi
+            
+            if grep -q "Kubernetes backup summary" backup-verify.log; then
+              k8s_status=$(grep "Kubernetes backup summary" backup-verify.log | tail -n1 || echo "Unknown")
+              echo "| Kubernetes | ✅ Completed | $k8s_status |" >> backup-verification-summary.md
+            fi
+            
+            if grep -q "AWS backup summary" backup-verify.log; then
+              aws_status=$(grep "AWS backup summary" backup-verify.log | tail -n1 || echo "Unknown")
+              echo "| AWS DocumentDB | ✅ Completed | $aws_status |" >> backup-verification-summary.md
+            fi
+          fi
+          
+          # Add detailed logs section
+          cat >> backup-verification-summary.md << EOF
+          
+          ## Detailed Results
+          
+          ### Verification Logs
+          \`\`\`
+          $(cat backup-verify.log 2>/dev/null || echo "No logs available")
+          \`\`\`
+          
+          ### Next Steps
+          
+          - Review any failed verifications above
+          - Ensure backup retention policies are properly configured
+          - Verify cross-region replication for disaster recovery
+          - Test backup restore procedures regularly
+          
+          ---
+          Generated by GitHub Actions on $(date -u)
+          EOF
+
+      - name: Upload comprehensive report
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-verification-comprehensive-report
+          path: backup-verification-summary.md
+          retention-days: 90
+
+      - name: Send Slack notification
+        if: failure() || (success() && github.event.inputs.notify_on_success == 'true')
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#infrastructure'
+          text: |
+            Backup Verification ${{ job.status }}
+            Environment: ${{ github.event.inputs.environment || 'all' }}
+            Type: ${{ github.event.inputs.verification_type || 'basic' }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  cleanup:
+    runs-on: ubuntu-latest
+    needs: [generate-report]
+    if: always() && github.event.inputs.cleanup_old_backups == 'true'
+    
+    steps:
+      - name: Cleanup old workflow artifacts
+        run: |
+          echo "🧹 Cleaning up old workflow artifacts..."
+          # This would typically use GitHub API to clean up old artifacts
+          # Implementation depends on organization policies

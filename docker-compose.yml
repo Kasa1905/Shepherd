@@ -1,0 +1,223 @@
+version: '3.8'
+
+# MongoDB Replica Set Bootstrap Strategy:
+# 
+# Phase 1: Start MongoDB nodes with keyFile auth enabled
+# Phase 2: Run initialization from within primary container (localhost exception)
+# Phase 3: Create admin user via localhost interface
+# Phase 4: Create app user via authenticated connection
+#
+# Usage:
+# 1. docker compose up -d (starts MongoDB nodes with auth)
+# 2. docker compose exec -T mongo-primary bash -lc "mongosh --eval 'rs.initiate(...)'"
+# 3. docker compose exec -T mongo-primary bash -lc "mongosh --eval 'use admin; db.createUser(...)'"
+# 4. Continue with authenticated operations
+#
+# Alternatively, use the helper script: ./scripts/init-replica-set.sh
+
+services:
+  # Flask Application Service
+  shepherd-app:
+    build: .
+    container_name: shepherd-app
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      - FLASK_DEBUG=False
+      # Updated connection string for 3-node replica set
+      - MONGODB_URI=mongodb://shepherd_user:shepherd_password123@mongo-primary:27017,mongo-secondary-1:27018,mongo-secondary-2:27019/shepherd?authSource=shepherd&replicaSet=shepherd-rs&readPreference=secondaryPreferred
+      - DATABASE_NAME=shepherd
+    depends_on:
+      mongo-primary:
+        condition: service_healthy
+      mongo-secondary-1:
+        condition: service_healthy
+      mongo-secondary-2:
+        condition: service_healthy
+      # Note: mongo-init service removed - use ./scripts/init-replica-set.sh instead
+    networks:
+      - shepherd-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s  # Increased for replica set initialization
+    volumes:
+      # Mount logs directory for persistent logging (optional)
+      - shepherd-logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # MongoDB Primary Node
+  mongo-primary:
+    image: mongo:7.0
+    container_name: mongo-primary
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin_password123
+      - MONGO_INITDB_DATABASE=shepherd
+    volumes:
+      # Persistent data storage for primary
+      - shepherd-mongodb-primary-data:/data/db
+      - shepherd-mongodb-primary-config:/data/configdb
+      # Mount keyFile for replica set authentication
+      - ./mongodb-keyfile/mongo-keyfile:/etc/mongodb-keyfile:ro
+      # Mount initialization scripts for localhost execution
+      - ./init-mongo-replica.sh:/scripts/init-mongo-replica.sh:ro
+      - ./init-mongo.js:/scripts/init-mongo.js:ro
+    networks:
+      - shepherd-network
+    restart: unless-stopped
+    healthcheck:
+      test: |
+        echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    # Start with replica set configuration and keyFile auth
+    command: mongod --replSet shepherd-rs --keyFile /etc/mongodb-keyfile --bind_ip_all
+
+  # MongoDB Secondary Node 1
+  mongo-secondary-1:
+    image: mongo:7.0
+    container_name: mongo-secondary-1
+    ports:
+      - "27018:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin_password123
+      - MONGO_INITDB_DATABASE=shepherd
+    volumes:
+      # Persistent data storage for secondary 1
+      - shepherd-mongodb-secondary1-data:/data/db
+      - shepherd-mongodb-secondary1-config:/data/configdb
+      # Mount keyFile for replica set authentication
+      - ./mongodb-keyfile/mongo-keyfile:/etc/mongodb-keyfile:ro
+    networks:
+      - shepherd-network
+    restart: unless-stopped
+    healthcheck:
+      test: |
+        echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 384M
+    # Start with replica set configuration and keyFile auth
+    command: mongod --replSet shepherd-rs --keyFile /etc/mongodb-keyfile --bind_ip_all
+
+  # MongoDB Secondary Node 2
+  mongo-secondary-2:
+    image: mongo:7.0
+    container_name: mongo-secondary-2
+    ports:
+      - "27019:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin_password123
+      - MONGO_INITDB_DATABASE=shepherd
+    volumes:
+      # Persistent data storage for secondary 2
+      - shepherd-mongodb-secondary2-data:/data/db
+      - shepherd-mongodb-secondary2-config:/data/configdb
+      # Mount keyFile for replica set authentication
+      - ./mongodb-keyfile/mongo-keyfile:/etc/mongodb-keyfile:ro
+    networks:
+      - shepherd-network
+    restart: unless-stopped
+    healthcheck:
+      test: |
+        echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 384M
+    # Start with replica set configuration and keyFile auth
+    command: mongod --replSet shepherd-rs --keyFile /etc/mongodb-keyfile --bind_ip_all
+
+  # MongoDB Admin Interface (optional, for development/debugging)
+  # Note: Connects with authentication after replica set initialization
+  mongo-express:
+    image: mongo-express:1.0
+    container_name: shepherd-mongo-express
+    ports:
+      - "8081:8081"
+    environment:
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=admin
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=admin_password123
+      # Connect to primary node for admin operations
+      - ME_CONFIG_MONGODB_SERVER=mongo-primary
+      - ME_CONFIG_MONGODB_PORT=27017
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=admin123
+    depends_on:
+      mongo-primary:
+        condition: service_healthy
+      # Note: mongo-init dependency removed - use manual initialization
+    networks:
+      - shepherd-network
+    restart: unless-stopped
+    profiles:
+      - debug
+
+# Networks
+networks:
+  shepherd-network:
+    driver: bridge
+    name: shepherd-network
+
+# Volumes for Replica Set Persistence
+volumes:
+  # Primary node volumes
+  shepherd-mongodb-primary-data:
+    name: shepherd-mongodb-primary-data
+    driver: local
+  shepherd-mongodb-primary-config:
+    name: shepherd-mongodb-primary-config
+    driver: local
+  # Secondary node 1 volumes  
+  shepherd-mongodb-secondary1-data:
+    name: shepherd-mongodb-secondary1-data
+    driver: local
+  shepherd-mongodb-secondary1-config:
+    name: shepherd-mongodb-secondary1-config
+    driver: local
+  # Secondary node 2 volumes
+  shepherd-mongodb-secondary2-data:
+    name: shepherd-mongodb-secondary2-data
+    driver: local
+  shepherd-mongodb-secondary2-config:
+    name: shepherd-mongodb-secondary2-config
+    driver: local
+  # Application logs
+  shepherd-logs:
+    name: shepherd-logs
+    driver: local

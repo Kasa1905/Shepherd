@@ -1,0 +1,40 @@
+{{- if and .Values.mongodb.external.enabled .Values.mongodb.external.ssl .Values.mongodb.external.sslCA }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "shepherd.fullname" . }}-ssl-ca
+  labels:
+    {{- include "shepherd.labels" . | nindent 4 }}
+data:
+  # RDS Combined CA Bundle for Amazon DocumentDB
+  # This bundle contains CA certificates for connecting to AWS DocumentDB
+  # Download from: https://s3.amazonaws.com/rds-downloads/rds-combined-ca-bundle.pem
+  rds-combined-ca-bundle.pem: |
+    -----BEGIN CERTIFICATE-----
+    MIIEBjCCAu6gAwIBAgIJAMc0ZzaSUK51MA0GCSqGSIb3DQEBBQUAMIGYMQswCQYD
+    VQQGEwJVUzEQMA4GA1UECAwHQXJpem9uYTETMBEGA1UEBwwKU2NvdHRzZGFsZTEa
+    MBgGA1UECgwRR29EYWRkeSBDbGFzcyAyIENBMTEwLwYDVQQDDChHbyBEYWRkeSBS
+    b290IENlcnRpZmljYXRlIEF1dGhvcml0eSAtIEcyMB4XDTA0MDkzMDE4MDAwMFoX
+    DTM0MDkzMDE4MDAwMFowgZgxCzAJBgNVBAYTAlVTMRAwDgYDVQQIDAdBcml6b25h
+    MRMwEQYDVQQHDApTY290dHNkYWxlMRowGAYDVQQKDBFHb0RhZGR5IENsYXNzIDIg
+    Q0ExMTAvBgNVBAMMKEdvIERhZGR5IFJvb3QgQ2VydGlmaWNhdGUgQXV0aG9yaXR5
+    IC0gRzIwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC54MsQ1K92vdvo
+    iuKDH9jd9DrfeBhJlF4H32jdTZOOhtZ6tIblKoZfzFv7CtbIaBCtKqT9VYDe1/9h
+    5FGtQ4P1wk4v8u7j3F+LqoUIIvqp5tLVDEiL2ktfOKp7q9LJ6WL1VHF1S1MfNjF7
+    aKvYj2vNZHVGVqp0+C7y0U2kRjJmYPLYN5N5X9D9N3DqjY7TH5A3D8P7L8uKLJoQ
+    H6NbKsBkSvY/3iqGo6Yh+v6vd8d4ynCdaVJfY2Srd+lktLOr5FKP8N6Hp5tdfUZ2
+    wWXP9E2x1dO7vCJJ1K2z6G8a5x2F5T8XJKQ4J2Y2Lm8r3o4N4z2fGc+d7F8UWlr
+    AgMBAAGjUDBOMB0GA1UdDgQWBBRhfWn12gvmPLKIyhXOJmZnKI3FKzAfBgNVHSME
+    GDAWgBRhfWn12gvmPLKIyhXOJmZnKI3FKzAMBgNVHRMEBTADAQH/MA0GCSqGSIb3
+    DQEBBQUAA4IBAQBFyPp2JmC8RVFM2XDaD+C7fWnKjb0G9Nd3xGl+v8J4PhE1wYjT
+    Nq3Jz5VAoxR8YvGHjY5O8bLt7eN4sQyf5LIwQf6VjO0J+U2vQ9d4zN6G3d4L4F4e
+    5qiI0x4lMtLyK+d9h6YlYl0FhKxsH3MQ2QfN1Q+G9V0nD5jF9YfF8mP5Z2z5L+LX
+    PfqKtNz8K8mT0Q3bV9vJ7yJ6BfZNB0P9Y8cF1k3nN8uF+kUqO3D9Y1bUcmF3VzF3
+    EsP9Y2sL1I4c2F3Z3jXq8JxG3mT0n5Y4lO2CQ9zC9h4N8Y2tE8z6z1hE8Q2Y9uoP
+    vO8K5vP4K3J8sF1K7f4J5F3P9Y2CJhU9hF3P
+    -----END CERTIFICATE-----
+    # NOTE: This is a placeholder certificate. In production, you should:
+    # 1. Download the actual RDS CA bundle from AWS
+    # 2. Mount it as a secret or use an init container to download it
+    # 3. Configure your Kubernetes deployment with the appropriate volume mounts
+{{- end }}

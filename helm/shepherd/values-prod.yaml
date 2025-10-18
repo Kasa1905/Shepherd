@@ -1,0 +1,416 @@
+# Helm values for Shepherd production environment
+# Optimized for stability, security, and high availability
+
+# Global configuration
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# Application configuration
+app:
+  name: shepherd
+  image:
+    registry: docker.io
+    repository: shepherd/shepherd
+    tag: "v1.0.0"  # Use specific version tags (never latest)
+    pullPolicy: IfNotPresent  # For stability
+  
+  # Higher replica count for production
+  replicaCount: 3
+  
+  # Conservative deployment strategy for production
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1              # Conservative rollout
+      maxUnavailable: 0        # Ensure no pods are unavailable
+    minReadySeconds: 30        # Wait for stability
+    progressDeadlineSeconds: 600  # 10 min timeout for safety
+  
+  # Deployment annotations for change tracking
+  deploymentAnnotations:
+    deployment.kubernetes.io/revision: "{{ .Release.Revision }}"
+  
+  # Production environment variables
+  env:
+    FLASK_ENV: production
+    FLASK_DEBUG: "False"
+    LOG_FORMAT: json
+    LOG_LEVEL: INFO  # Standard logging for production
+    METRICS_ENABLED: "True"
+    WEBHOOK_ENABLED: "True"
+    WEBHOOK_EVENTS: "config.created,config.updated,config.rolled_back"
+    WEBHOOK_TIMEOUT: "10"
+    WEBHOOK_RETRY_ATTEMPTS: "3"
+    WEBHOOK_RETRY_DELAY: "1"
+  
+  # Secrets (set via --set or external secret management)
+  secrets:
+    secretKey: ""
+    webhookSecret: ""
+  
+  # Production-grade resource limits
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+  
+  # Health checks with production settings
+  livenessProbe:
+    httpGet:
+      path: /api/health
+      port: http
+    initialDelaySeconds: 60  # Allow MongoDB connection time
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 3
+  
+  readinessProbe:
+    httpGet:
+      path: /api/health
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 3
+    successThreshold: 1
+  
+  # Production security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 5000
+  annotations: {}
+
+# Production ingress configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+    nginx.ingress.kubernetes.io/enable-owasp-core-rules: "true"
+  hosts:
+    - host: shepherd.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: shepherd-prod-tls
+      hosts:
+        - shepherd.example.com
+
+# Production MongoDB configuration
+mongodb:
+  # Use external MongoDB (production cluster with multi-AZ)
+  external:
+    enabled: true
+    hosts:
+      - mongodb-prod-0.mongodb-headless.production.svc.cluster.local:27017
+      - mongodb-prod-1.mongodb-headless.production.svc.cluster.local:27017
+      - mongodb-prod-2.mongodb-headless.production.svc.cluster.local:27017
+    database: shepherd_production
+    username: shepherd
+    password: ""  # Set via --set or external secret
+    authSource: shepherd_production
+    ssl: true  # Enable SSL for production
+    sslCA: "/opt/ssl/rds-combined-ca-bundle.pem"
+    sslAllowInvalidCertificates: false
+    sslAllowInvalidHostnames: false
+    replicaSet: "rs0-prod"
+    readPreference: "secondaryPreferred"  # Distribute reads
+    retryWrites: true
+    maxPoolSize: 50  # Higher pool for production load
+    connectTimeoutMS: 20000
+    serverSelectionTimeoutMS: 30000
+    authenticationDatabase: shepherd_production
+    authMechanism: "SCRAM-SHA-256"
+  
+  # Internal MongoDB disabled for production
+  internal:
+    enabled: false
+
+# Production backup configuration
+backup:
+  enabled: true
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  
+  # Backup image with cloud CLI tools
+  image:
+    registry: docker.io
+    repository: shepherd/mongodb-backup
+    tag: latest
+    pullPolicy: IfNotPresent
+  
+  # Retention policy
+  retention:
+    days: 30
+    weeks: 12
+    months: 12
+  
+  # Storage configuration
+  storage:
+    storageClass: "fast-ssd"
+    size: 100Gi  # Larger for production
+    
+  # Backup job resources
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  
+  # Production backup destination
+  destination:
+    s3:
+      enabled: true
+      bucket: "shepherd-prod-backups"
+      region: "us-west-2"
+      accessKey: ""  # Set via secret
+      secretKey: ""  # Set via secret
+
+# Production monitoring configuration
+monitoring:
+  # Prometheus ServiceMonitor
+  serviceMonitor:
+    enabled: true
+    namespace: "monitoring"
+    interval: 30s
+    path: /metrics
+    
+  # Replication monitoring
+  replication:
+    enabled: true
+    lagThresholdSeconds: 60
+    alerts:
+      enabled: true
+      replicationLag:
+        enabled: true
+        thresholdSeconds: 60
+      noPrimary:
+        enabled: true
+      insufficientVoters:
+        enabled: true
+  
+  # Prometheus metrics
+  prometheus:
+    enabled: true
+    path: /metrics
+  
+  # Health checks
+  healthCheck:
+    enabled: true
+    path: /api/health
+  
+  # Grafana dashboards
+  grafana:
+    enabled: true
+    dashboards: []
+
+# Production autoscaling configuration
+autoscaling:
+  enabled: true
+  minReplicas: 3      # Higher minimum for production
+  maxReplicas: 20     # Higher maximum for production load
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Blue/Green deployment configuration
+blueGreen:
+  enabled: false
+  activeService: blue
+  previewService: green
+
+# Production Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2  # Ensure at least 2 pods always running
+
+# Production network policies
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 5000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 5000
+
+# ServiceMonitor for Prometheus
+serviceMonitor:
+  enabled: true
+  namespace: "monitoring"
+  interval: 30s
+  path: /metrics
+  labels:
+    environment: production
+    tier: production
+  annotations:
+    prometheus.io/scrape: "true"
+
+# Persistent volumes - disabled for stateless app
+persistence:
+  enabled: false
+
+# Production pod annotations and labels
+podAnnotations:
+  environment: production
+  tier: production
+  backup.velero.io/backup-volumes: "data"  # Velero backup annotation
+
+podLabels:
+  environment: production
+  tier: production
+
+# Production node selector, tolerations, and affinity
+nodeSelector:
+  kubernetes.io/os: linux
+  node-type: application  # Dedicated application nodes
+
+tolerations:
+  - key: "dedicated"
+    operator: "Equal"
+    value: "application"
+    effect: "NoSchedule"
+
+affinity:
+  podAntiAffinity:
+    # Required: Spread across nodes
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+                - shepherd
+        topologyKey: kubernetes.io/hostname
+    # Preferred: Spread across availability zones
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - shepherd
+          topologyKey: topology.kubernetes.io/zone
+
+# RBAC configuration
+rbac:
+  create: true
+  serviceAccountName: ""
+
+# Production webhook configuration
+webhooks:
+  urls:
+  # Use external secret references; do NOT commit real URLs
+  - https://hooks.slack.com/services/REDACTED/PROD/WEBHOOK
+    - https://api.pagerduty.com/integration/webhook
+  # Production alerting webhooks
+
+# Production log forwarding configuration
+logging:
+  structured: true
+  forwarding:
+    # ELK Stack for production
+    elk:
+      enabled: true
+      endpoint: "https://elasticsearch.logging.svc.cluster.local:9200"
+    
+    # DataDog for production monitoring
+    datadog:
+      enabled: true
+      apiKey: ""  # Set via secret
+    
+    # CloudWatch for AWS EKS
+    cloudwatch:
+      enabled: true
+      region: us-west-2
+      logGroup: /k8s/shepherd-production
+
+# Production monitoring and observability
+observability:
+  enabled: true
+  
+  # Metrics configuration
+  metrics:
+    enabled: true
+    path: /metrics
+    port: 5000
+    
+  # Production logging
+  logging:
+    format: json
+    level: INFO  # Standard production logging
+    
+  # Webhooks configuration
+  webhooks:
+    enabled: true
+    env:
+      WEBHOOK_ENABLED: "True"
+      WEBHOOK_EVENTS: "config.created,config.updated,config.rolled_back"
+      WEBHOOK_TIMEOUT: "10"
+      WEBHOOK_RETRY_ATTEMPTS: "3"
+      WEBHOOK_RETRY_DELAY: "1"
+
+# Additional security configurations for production
+securityContext:
+  # Pod-level security context
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: "OnRootMismatch"
+  seccompProfile:
+    type: RuntimeDefault
+
+# Production-specific init containers
+initContainers:
+  - name: wait-for-mongodb
+    image: busybox:1.36
+    command: ['sh', '-c', 'until nc -z mongodb-prod-0.mongodb-headless.production.svc.cluster.local 27017; do echo waiting for mongodb; sleep 2; done;']
+
+# Additional volumes for SSL certificates
+extraVolumes:
+  - name: ssl-ca-certs
+    configMap:
+      name: mongodb-ssl-ca
+
+extraVolumeMounts:
+  - name: ssl-ca-certs
+    mountPath: /opt/ssl
+    readOnly: true
+
+# Development overrides disabled for production
+development:
+  enabled: false

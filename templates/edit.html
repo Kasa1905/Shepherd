@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+
+{% block title %}Edit {{ config.config_id }}{% endblock %}
+
+{% block content %}
+{% if config %}
+<nav class="breadcrumb">
+    <a href="/">Dashboard</a> > <a href="/config/{{ config.config_id }}">Config Details</a> > Edit
+</nav>
+
+<div class="page-header">
+    <h1>Edit Configuration: {{ config.config_id }}</h1>
+    <p class="subtitle">Editing will create version <span class="version-badge">{{ config.version + 1 }}</span></p>
+</div>
+
+{% if error %}
+<div class="alert alert-error">
+    <strong>Error:</strong> {{ error }}
+</div>
+{% endif %}
+
+<div class="config-metadata">
+    <h2>Configuration Metadata (Read-Only)</h2>
+    <dl>
+        <dt>Config ID</dt>
+        <dd><strong>{{ config.config_id }}</strong></dd>
+        
+        <dt>App Name</dt>
+        <dd>{{ config.app_name }}</dd>
+        
+        <dt>Environment</dt>
+        <dd>{{ config.environment }}</dd>
+        
+        <dt>Current Version</dt>
+        <dd><span class="version-badge">Version {{ config.version }}</span></dd>
+    </dl>
+</div>
+
+<form method="POST" action="/edit/{{ config.config_id }}">
+    <fieldset>
+        <legend>Edit Configuration Settings</legend>
+        
+        <label for="settings">
+            Configuration Settings (JSON)
+            <small>Edit the JSON settings below. Ensure valid JSON format before saving.</small>
+        </label>
+        <textarea 
+            id="settings" 
+            name="settings" 
+            rows="20" 
+            required
+            style="font-family: 'Courier New', monospace; font-size: 0.875rem;"
+            placeholder='{"key": "value", "nested": {"setting": "example"}}'
+        >{{ settings_json }}</textarea>
+        
+        <label for="change_notes">Change Notes (Optional but Recommended)</label>
+        <textarea 
+            id="change_notes" 
+            name="change_notes" 
+            rows="3"
+            placeholder="Describe what you changed and why..."
+            style="margin-bottom: 1.5rem;"
+        ></textarea>
+        <small style="color: #6b7280; font-size: 0.875rem; display: block; margin-top: -1rem; margin-bottom: 1rem;">
+            Provide context for this update to help track configuration evolution.<br>
+            Examples: 'Increased timeout for production stability', 'Added new feature flag'
+        </small>
+        
+        <div class="actions">
+            <button type="submit" class="primary">Save Changes</button>
+            <a href="/config/{{ config.config_id }}" role="button" class="secondary">Cancel</a>
+        </div>
+    </fieldset>
+</form>
+
+<!-- Previous Change Notes -->
+{% if config.change_notes %}
+<div style="margin-top: 2rem; padding: 1.5rem; background: #f0f9ff; border-radius: 0.375rem; border: 1px solid #bae6fd;">
+    <h3 style="margin: 0 0 0.75rem 0; color: #0369a1;">Previous Change Notes</h3>
+    <p style="margin: 0; font-style: italic; color: #075985;">
+        "{{ config.change_notes }}"
+    </p>
+</div>
+{% endif %}
+
+<div style="margin-top: 2rem; padding: 1.5rem; background: #f8fafc; border-radius: 0.375rem; border: 1px solid #e2e8f0;">
+    <h3>Instructions</h3>
+    <ul>
+        <li><strong>Edit the JSON settings</strong> in the textarea above</li>
+        <li><strong>Add descriptive change notes</strong> to document your changes (highly recommended)</li>
+        <li><strong>Ensure valid JSON format</strong> before saving (proper quotes, commas, brackets)</li>
+        <li><strong>Previous versions are preserved</strong> and accessible via version history</li>
+        <li><strong>Saving will create a new version</strong> (version {{ config.version + 1 }})</li>
+    </ul>
+    
+    <details style="margin-top: 1rem;">
+        <summary>JSON Format Example</summary>
+        <pre class="json-code" style="margin-top: 0.5rem;">{
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "name": "myapp"
+  },
+  "features": {
+    "debug": true,
+    "cache_enabled": false
+  },
+  "limits": {
+    "max_connections": 100,
+    "timeout": 30
+  }
+}</pre>
+    </details>
+</div>
+
+<div class="actions" style="margin-top: 2rem;">
+    <a href="/history/{{ config.config_id }}" role="button" class="secondary outline">View Version History</a>
+    <a href="/" role="button" class="secondary outline">Back to Dashboard</a>
+</div>
+
+<script>
+// Simple JSON validation on form submit
+document.querySelector('form').addEventListener('submit', function(e) {
+    const textarea = document.getElementById('settings');
+    const jsonString = textarea.value.trim();
+    
+    if (!jsonString) {
+        e.preventDefault();
+        alert('Please enter some JSON settings before saving.');
+        return;
+    }
+    
+    try {
+        JSON.parse(jsonString);
+    } catch (error) {
+        e.preventDefault();
+        alert('Invalid JSON format. Please check your syntax:\n\n' + error.message);
+        textarea.focus();
+    }
+});
+
+// Add basic JSON formatting helper
+function formatJSON() {
+    const textarea = document.getElementById('settings');
+    try {
+        const parsed = JSON.parse(textarea.value);
+        textarea.value = JSON.stringify(parsed, null, 2);
+    } catch (error) {
+        alert('Cannot format invalid JSON. Please fix syntax errors first.');
+    }
+}
+</script>
+
+{% else %}
+<div class="empty-state" style="text-align: center; padding: 3rem 0;">
+    <h2>Configuration Not Found</h2>
+    <p>The requested configuration could not be found.</p>
+    <div style="margin-top: 1.5rem;">
+        <a href="/" role="button">Return to Dashboard</a>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

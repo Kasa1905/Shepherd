@@ -1,0 +1,474 @@
+# Default values for Shepherd Configuration Management System
+# This is a YAML-formatted file.
+
+# Global configuration
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# Application configuration
+app:
+  name: shepherd
+  image:
+    registry: docker.io
+    repository: shepherd/shepherd
+    tag: latest
+    pullPolicy: IfNotPresent
+  
+  # Application settings
+  replicaCount: 2
+  
+  # Deployment strategy configuration
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1              # Allow 1 extra pod during rollout
+      maxUnavailable: 0        # Ensure no pods are unavailable during rollout
+    minReadySeconds: 30        # Wait 30s after pod ready before continuing
+    progressDeadlineSeconds: 600  # 10 min timeout for rollout
+    revisionHistoryLimit: 10   # Keep last 10 revisions for rollback
+  
+  # Deployment annotations for change tracking
+  deploymentAnnotations:
+    deployment.kubernetes.io/revision: "{{ .Release.Revision }}"
+  
+  # Environment variables
+  env:
+    FLASK_ENV: production
+    FLASK_DEBUG: "False"
+    LOG_FORMAT: json
+    LOG_LEVEL: INFO
+    METRICS_ENABLED: "True"
+    WEBHOOK_ENABLED: "True"
+    WEBHOOK_EVENTS: "config.created,config.updated,config.rolled_back"
+    WEBHOOK_TIMEOUT: "10"
+    WEBHOOK_RETRY_ATTEMPTS: "3"
+    WEBHOOK_RETRY_DELAY: "1"
+  
+  # Secrets (set via --set or external secret management)
+  secrets:
+    secretKey: ""
+    webhookSecret: ""
+  
+  # Resource limits and requests
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+  
+  # Health checks
+  livenessProbe:
+    httpGet:
+      path: /api/health
+      port: http
+    initialDelaySeconds: 60  # Increased for MongoDB connection time
+    periodSeconds: 15        # Increased interval for MongoDB apps
+    timeoutSeconds: 10       # Increased timeout for DB queries
+    failureThreshold: 3
+  
+  startupProbe:
+    httpGet:
+      path: /api/health
+      port: http
+    initialDelaySeconds: 5   # Start checking early
+    periodSeconds: 5         # Check frequently during startup
+    timeoutSeconds: 5        # Quick timeout during startup
+    failureThreshold: 12     # Allow up to 60s for startup (5s * 12)
+    successThreshold: 1      # Pod started after 1 success
+  
+  readinessProbe:
+    httpGet:
+      path: /api/health
+      port: http
+    initialDelaySeconds: 15  # Faster initial readiness
+    periodSeconds: 10        # Increased interval for DB checks
+    timeoutSeconds: 10       # Increased timeout for DB queries
+    failureThreshold: 3
+    successThreshold: 1      # Pod ready after 1 success
+  
+  # Security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 5000
+  annotations: {}
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: shepherd.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+    # - secretName: shepherd-tls
+    #   hosts:
+    #     - shepherd.local
+
+# MongoDB configuration
+mongodb:
+  # Use external MongoDB (recommended for production)
+  external:
+    enabled: true
+    # Multiple hosts for replica set (comma-separated or array)
+    hosts:
+      - mongodb-0.mongodb-headless.default.svc.cluster.local:27017
+      - mongodb-1.mongodb-headless.default.svc.cluster.local:27017
+      - mongodb-2.mongodb-headless.default.svc.cluster.local:27017
+    # Legacy single host support (deprecated)
+    host: mongodb.default.svc.cluster.local
+    port: 27017
+    database: shepherd_cms
+    username: shepherd
+    password: ""  # Set via --set or external secret
+    # Connection options for replica set
+    authSource: shepherd_cms  # Auth source should match database
+    ssl: false
+    # SSL Configuration for DocumentDB (AWS)
+    sslCA: ""  # Path to CA bundle file (e.g., /opt/ssl/rds-combined-ca-bundle.pem)
+    sslCertificateKeyFile: ""  # Optional client certificate
+    sslAllowInvalidCertificates: false
+    sslAllowInvalidHostnames: false
+    replicaSet: "rs0"  # Replica set name
+    readPreference: "secondaryPreferred"  # Distribute reads
+    retryWrites: true
+    maxPoolSize: 50
+    connectTimeoutMS: 20000
+    serverSelectionTimeoutMS: 30000
+    # Additional auth configuration
+    authenticationDatabase: shepherd_cms
+    authMechanism: "SCRAM-SHA-256"
+  
+  # Internal MongoDB replica set (for development/testing)
+  internal:
+    enabled: false
+    image:
+      registry: docker.io
+      repository: mongo
+      tag: 7.0
+      pullPolicy: IfNotPresent
+    
+    # Replica set configuration
+    replicaSet:
+      enabled: true
+      name: "shepherd-rs"
+      replicas: 3
+      
+    # Authentication
+    auth:
+      enabled: true
+      rootUsername: admin
+      rootPassword: ""  # Set via --set or external secret
+      username: shepherd
+      password: ""      # Set via --set or external secret
+      database: shepherd_cms
+    
+    # Persistence configuration
+    persistence:
+      enabled: true
+      storageClass: ""
+      accessMode: ReadWriteOnce
+      size: 10Gi
+      # Recommended storage class for production
+      annotations: {}
+    
+    # Resource configuration for production workloads
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+      requests:
+        cpu: 1000m
+        memory: 1Gi
+    
+    # Pod anti-affinity to spread replicas across nodes/zones
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                - mongodb
+            topologyKey: kubernetes.io/hostname
+        - weight: 50
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                - mongodb
+            topologyKey: topology.kubernetes.io/zone
+
+# Backup configuration for MongoDB
+backup:
+  enabled: false
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  
+  # Backup image with cloud CLI tools
+  image:
+    registry: docker.io
+    repository: shepherd/mongodb-backup
+    tag: latest
+    pullPolicy: IfNotPresent
+  
+  # Retention policy
+  retention:
+    days: 30
+    weeks: 12
+    months: 12
+  
+  # Storage configuration
+  storage:
+    storageClass: ""
+    size: 50Gi
+    
+  # Backup job resources
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  
+  # Backup destination (optional)
+  destination:
+    s3:
+      enabled: false
+      bucket: ""
+      region: ""
+      accessKey: ""
+      secretKey: ""
+    gcs:
+      enabled: false
+      bucket: ""
+      serviceAccountKey: ""
+
+# Monitoring configuration for replica set
+monitoring:
+  # Prometheus ServiceMonitor
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    interval: 30s
+    path: /metrics
+    
+  # Replication monitoring
+  replication:
+    enabled: true
+    lagThresholdSeconds: 60
+    alerts:
+      enabled: true
+      # Alert when replication lag exceeds threshold
+      replicationLag:
+        enabled: true
+        thresholdSeconds: 60
+      # Alert when no primary is available
+      noPrimary:
+        enabled: true
+      # Alert when replica set has insufficient voting members
+      insufficientVoters:
+        enabled: true
+  
+  # Prometheus metrics
+  prometheus:
+    enabled: true
+    path: /metrics
+  
+  # Health checks
+  healthCheck:
+    enabled: true
+    path: /api/health
+  
+  # Custom dashboards
+  grafana:
+    enabled: false
+    dashboards: []
+
+# Autoscaling configuration
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Blue/Green deployment configuration
+blueGreen:
+  enabled: false
+  activeService: blue     # or green
+  previewService: green   # or blue
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Network policies
+networkPolicy:
+  enabled: false
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 5000
+
+# ServiceMonitor for Prometheus
+serviceMonitor:
+  enabled: false
+  namespace: ""
+  interval: 30s
+  path: /metrics
+  labels: {}
+  annotations: {}
+
+# Persistent volumes for application logs (if needed)
+persistence:
+  enabled: false
+  accessMode: ReadWriteOnce
+  size: 5Gi
+  storageClass: ""
+
+# Pod annotations and labels
+podAnnotations: {}
+podLabels: {}
+
+# Node selector, tolerations, and affinity
+nodeSelector: {}
+tolerations: []
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - shepherd
+          topologyKey: kubernetes.io/hostname
+
+# RBAC configuration
+rbac:
+  create: true
+  serviceAccountName: ""
+
+# Additional init containers
+initContainers: []
+
+# Additional containers
+extraContainers: []
+
+# Additional volumes
+extraVolumes: []
+
+# Additional volume mounts
+extraVolumeMounts: []
+
+# Webhook configuration
+webhooks:
+  urls: []  # Add webhook URLs here
+  # Example:
+  # - https://hooks.slack.com/services/...
+  # - https://api.example.com/webhooks
+
+# Log forwarding configuration (examples)
+logging:
+  # Enable structured JSON logging
+  structured: true
+  
+  # Log forwarding to external systems
+  forwarding:
+    # ELK Stack
+    elk:
+      enabled: false
+      endpoint: ""
+    
+    # Splunk
+    splunk:
+      enabled: false
+      endpoint: ""
+      token: ""
+    
+    # Datadog
+    datadog:
+      enabled: false
+      apiKey: ""
+    
+    # CloudWatch (for EKS)
+    cloudwatch:
+      enabled: false
+      region: us-west-2
+      logGroup: /k8s/shepherd
+
+# Monitoring and observability
+observability:
+  # Enable/disable observability features
+  enabled: true
+  
+  # Metrics configuration
+  metrics:
+    enabled: true
+    path: /metrics
+    port: 5000
+    
+  # Logging configuration
+  logging:
+    format: json
+    level: INFO
+    
+  # Webhooks configuration
+  webhooks:
+    enabled: true
+    env:
+      WEBHOOK_ENABLED: "True"
+      WEBHOOK_EVENTS: "config.created,config.updated,config.rolled_back"
+      WEBHOOK_TIMEOUT: "10"
+      WEBHOOK_RETRY_ATTEMPTS: "3"
+      WEBHOOK_RETRY_DELAY: "1"
+
+# Development overrides (for local development)
+development:
+  enabled: false
+  image:
+    tag: dev
+  env:
+    FLASK_ENV: development
+    FLASK_DEBUG: "True"
+    LOG_LEVEL: DEBUG
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi

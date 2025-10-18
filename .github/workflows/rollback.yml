@@ -1,0 +1,90 @@
+name: Rollback Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        type: choice
+        options:
+        - staging
+        - production
+      revision:
+        description: 'Target revision number (optional - will use previous if not specified)'
+        required: false
+        type: string
+      reason:
+        description: 'Reason for rollback'
+        required: true
+        type: string
+
+jobs:
+  rollback:
+    name: Rollback ${{ github.event.inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+        
+    - name: Install Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: 'v3.12.0'
+        
+    - name: Configure kubeconfig
+      run: |
+        mkdir -p ~/.kube
+        if [ "${{ github.event.inputs.environment }}" = "staging" ]; then
+          echo '${{ secrets.KUBECONFIG_STAGING }}' | base64 -d > ~/.kube/config
+        else
+          echo '${{ secrets.KUBECONFIG_PRODUCTION }}' | base64 -d > ~/.kube/config
+        fi
+        chmod 600 ~/.kube/config
+        
+    - name: Execute rollback
+      run: |
+        chmod +x ./scripts/rollback.sh
+        if [ -n "${{ github.event.inputs.revision }}" ]; then
+          ./scripts/rollback.sh \
+            --namespace ${{ github.event.inputs.environment }} \
+            --revision ${{ github.event.inputs.revision }} \
+            --reason "${{ github.event.inputs.reason }}" \
+            --force
+        else
+          ./scripts/rollback.sh \
+            --namespace ${{ github.event.inputs.environment }} \
+            --reason "${{ github.event.inputs.reason }}" \
+            --force
+        fi
+        
+    - name: Verify rollback
+      run: |
+        # Wait for rollback to complete
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=shepherd -n ${{ github.event.inputs.environment }} --timeout=300s
+        
+        # Check pod status
+        kubectl get pods -n ${{ github.event.inputs.environment }} -l app.kubernetes.io/name=shepherd
+        
+        # Test health endpoint
+        POD_NAME=$(kubectl get pods -n ${{ github.event.inputs.environment }} -l app.kubernetes.io/name=shepherd -o jsonpath='{.items[0].metadata.name}')
+        kubectl exec -n ${{ github.event.inputs.environment }} $POD_NAME -- curl -f http://localhost:5000/api/health
+        
+    - name: Send alert notification
+      if: always()
+      run: |
+        echo "🔄 ROLLBACK COMPLETED"
+        echo "Environment: ${{ github.event.inputs.environment }}"
+        echo "Revision: ${{ github.event.inputs.revision || 'previous' }}"
+        echo "Reason: ${{ github.event.inputs.reason }}"
+        echo "Status: ${{ job.status }}"
+        echo "Operator: ${{ github.actor }}"
+        echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        # Add webhook notification here if configured

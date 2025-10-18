@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+
+{% block title %}Version History - {{ config_id }}{% endblock %}
+
+{% block content %}
+<nav class="breadcrumb">
+    <a href="/">Dashboard</a> > <a href="/config/{{ config_id }}">Config Details</a> > Version History
+</nav>
+
+<div class="page-header">
+    <h1>Version History: {{ config_id }}</h1>
+    <p>{{ versions|length }} version(s) found</p>
+    <div class="actions" style="margin-top: 1rem;">
+        <a href="/config/{{ config_id }}" role="button" class="secondary outline">← Back to Config Details</a>
+    </div>
+</div>
+
+{% if versions and versions|length > 0 %}
+
+<div style="margin-bottom: 2rem;">
+    <div class="actions">
+        <a href="/edit/{{ config_id }}" role="button">Edit Latest Version</a>
+        <a href="/" role="button" class="secondary">Back to Dashboard</a>
+    </div>
+</div>
+
+{% for version in versions %}
+<article style="margin-bottom: 2rem; border: 1px solid #e2e8f0; border-radius: 0.375rem; padding: 1.5rem;">
+    <header style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <div>
+            <h3 style="margin: 0;">
+                Version {{ version.version }}
+                {% if loop.first %}
+                <span style="background: #10b981; color: white; padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.75rem; margin-left: 0.5rem;">LATEST</span>
+                {% endif %}
+            </h3>
+            <p style="margin: 0.25rem 0 0 0; color: #64748b; font-size: 0.875rem;">
+                Updated: {{ version.updated_at }}
+                {% if version.created_at != version.updated_at %}
+                | Created: {{ version.created_at }}
+                {% endif %}
+                {% if version.updated_by %}
+                | Updated by: <span class="updated-by">{{ version.updated_by }}</span>
+                {% endif %}
+            </p>
+        </div>
+        <div>
+            <span class="version-badge">v{{ version.version }}</span>
+            <!-- Version comparison and rollback actions -->
+            <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                {% if not loop.first %}
+                <a href="/compare/{{ config_id }}/{{ version.version }}/{{ versions[0].version }}" 
+                   role="button" class="action-button-small button-compare">
+                    Compare to Latest
+                </a>
+                {% endif %}
+                {% if loop.index > 1 %}
+                <a href="/compare/{{ config_id }}/{{ versions[loop.index-2].version }}/{{ version.version }}" 
+                   role="button" class="action-button-small button-compare">
+                    Compare to Previous
+                </a>
+                {% endif %}
+                {% if not loop.first and session.role in ['editor', 'admin'] %}
+                <button onclick="confirmRollback('{{ config_id }}', '{{ version.version }}')" 
+                        class="action-button-small button-rollback">
+                    Rollback to This
+                </button>
+                {% endif %}
+            </div>
+        </div>
+    </header>
+    
+    <details {% if loop.first %}open{% endif %}>
+        <summary style="cursor: pointer; font-weight: 600; margin-bottom: 1rem;">
+            View Configuration Settings
+            <small style="font-weight: normal; color: #64748b;">
+                ({{ version.settings.keys()|length }} setting{% if version.settings.keys()|length != 1 %}s{% endif %})
+            </small>
+        </summary>
+        
+        <div class="config-metadata" style="margin-bottom: 1rem;">
+            <dl style="display: grid; grid-template-columns: auto 1fr; gap: 0.5rem 1rem; margin: 0;">
+                <dt>App Name:</dt>
+                <dd style="margin: 0;">{{ version.app_name }}</dd>
+                <dt>Environment:</dt>
+                <dd style="margin: 0;">{{ version.environment }}</dd>
+                <dt>Version:</dt>
+                <dd style="margin: 0;">{{ version.version }}</dd>
+                {% if version.updated_by %}
+                <dt>Updated By:</dt>
+                <dd style="margin: 0;"><span class="updated-by">{{ version.updated_by }}</span></dd>
+                {% endif %}
+            </dl>
+            {% if version.change_notes %}
+            <div class="change-notes metadata-field" style="margin-top: 1rem;">
+                <strong>Change Notes:</strong> {{ version.change_notes }}
+            </div>
+            {% endif %}
+        </div>
+        
+        <pre class="json-code">{{ version.settings | tojson(indent=4) }}</pre>
+        
+        {% if not loop.first %}
+        <div style="margin-top: 1rem;">
+            <small style="color: #64748b;">
+                <strong>Note:</strong> This is a previous version. The latest version is {{ versions[0].version }}.
+            </small>
+        </div>
+        {% endif %}
+    </details>
+</article>
+{% endfor %}
+
+<div style="margin-top: 3rem; padding-top: 2rem; border-top: 1px solid #e2e8f0;">
+    <h3>Version History Summary</h3>
+    <ul>
+        <li><strong>Total Versions:</strong> {{ versions|length }}</li>
+        <li><strong>Latest Version:</strong> {{ versions[0].version }} ({{ versions[0].updated_at }})</li>
+        <li><strong>Original Creation:</strong> {{ versions[-1].created_at }}</li>
+        <li><strong>Configuration ID:</strong> {{ config_id }}</li>
+    </ul>
+    
+    <div class="actions" style="margin-top: 1.5rem;">
+        <a href="/config/{{ config_id }}" role="button" class="secondary">View Current Details</a>
+        <a href="/edit/{{ config_id }}" role="button">Edit Configuration</a>
+        <a href="/" role="button" class="secondary outline">Back to Dashboard</a>
+    </div>
+</div>
+
+{% else %}
+<div class="empty-state" style="text-align: center; padding: 3rem 0;">
+    <h2>No Version History Found</h2>
+    <p>No version history found for configuration: <strong>{{ config_id }}</strong></p>
+    <div style="margin-top: 1.5rem;">
+        <a href="/" role="button">Return to Dashboard</a>
+    </div>
+</div>
+{% endif %}
+
+<style>
+/* Additional styles for version history */
+details[open] summary {
+    margin-bottom: 1rem;
+}
+
+details summary {
+    padding: 0.5rem;
+    background: #f8fafc;
+    border-radius: 0.25rem;
+    border: 1px solid #e2e8f0;
+}
+
+details summary:hover {
+    background: #f1f5f9;
+}
+
+.version-timeline {
+    position: relative;
+}
+
+.version-timeline::before {
+    content: '';
+    position: absolute;
+    left: 1rem;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #e2e8f0;
+}
+
+@media (max-width: 768px) {
+    .config-metadata dl {
+        grid-template-columns: 1fr;
+    }
+    
+    .config-metadata dt {
+        font-weight: 600;
+        margin-top: 0.5rem;
+    }
+    
+    .config-metadata dt:first-child {
+        margin-top: 0;
+    }
+}
+</style>
+
+<!-- Rollback Confirmation Modal -->
+<div id="rollbackModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+        <h3>Confirm Rollback</h3>
+        <p>Are you sure you want to rollback configuration "<span id="rollbackConfigId"></span>" to version <span id="rollbackVersion"></span>?</p>
+        <p><strong>Warning:</strong> This will create a new version with the settings from the selected version. This action cannot be undone.</p>
+        <div style="display: flex; gap: 1rem; justify-content: flex-end; margin-top: 1.5rem;">
+            <button onclick="closeRollbackModal()" class="secondary">Cancel</button>
+            <button onclick="executeRollback()" class="button-rollback">Confirm Rollback</button>
+        </div>
+    </div>
+</div>
+
+<script>
+let rollbackData = {};
+
+function confirmRollback(configId, version) {
+    rollbackData = { configId, version };
+    document.getElementById('rollbackConfigId').textContent = configId;
+    document.getElementById('rollbackVersion').textContent = version;
+    document.getElementById('rollbackModal').style.display = 'flex';
+}
+
+function closeRollbackModal() {
+    document.getElementById('rollbackModal').style.display = 'none';
+    rollbackData = {};
+}
+
+function executeRollback() {
+    if (rollbackData.configId && rollbackData.version) {
+        // Create a hidden form to submit POST request
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = `/rollback/${rollbackData.configId}/${rollbackData.version}`;
+        form.style.display = 'none';
+        
+        // Add any necessary hidden fields if needed
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+
+// Close modal when clicking outside
+document.getElementById('rollbackModal').addEventListener('click', function(e) {
+    if (e.target === this) {
+        closeRollbackModal();
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,727 @@
+name: Disaster Recovery Testing
+
+on:
+  schedule:
+    # Run DR tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+    # Run weekly comprehensive tests on Sundays at 1 AM UTC
+    - cron: '0 1 * * 0'
+  
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Type of DR test to run'
+        required: true
+        default: 'basic'
+        type: choice
+        options:
+        - basic
+        - comprehensive
+        - failover-simulation
+      deployment_target:
+        description: 'Deployment target to test'
+        required: true
+        default: 'docker-compose'
+        type: choice
+        options:
+        - docker-compose
+        - kubernetes
+        - aws
+      notify_on_success:
+        description: 'Send notifications on successful tests'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  # Test configuration
+  TEST_TIMEOUT: 1800  # 30 minutes
+  RTO_TARGET: 3600    # 60 minutes
+  RPO_TARGET: 900     # 15 minutes
+  
+  # AWS configuration
+  AWS_REGION: us-west-2
+  
+  # Kubernetes configuration
+  KUBECTL_VERSION: v1.28.0
+  HELM_VERSION: v3.12.0
+
+jobs:
+  detect-changes:
+    name: Detect Infrastructure Changes
+    runs-on: ubuntu-latest
+    outputs:
+      infrastructure-changed: ${{ steps.changes.outputs.infrastructure }}
+      database-changed: ${{ steps.changes.outputs.database }}
+      backup-changed: ${{ steps.changes.outputs.backup }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      
+      - name: Detect changes
+        uses: dorny/paths-filter@v2
+        id: changes
+        with:
+          filters: |
+            infrastructure:
+              - 'terraform/**'
+              - 'helm/**'
+              - 'docker-compose.yml'
+              - 'init-mongo-replica.sh'
+            database:
+              - 'database.py'
+              - 'app.py'
+            backup:
+              - 'terraform/**/backup-automation.tf'
+              - 'helm/**/mongodb-backup-cronjob.yaml'
+              - 'scripts/test-dr.sh'
+
+  docker-compose-dr-test:
+    name: Docker Compose DR Test
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: |
+      github.event_name == 'schedule' || 
+      github.event.inputs.deployment_target == 'docker-compose' ||
+      needs.detect-changes.outputs.infrastructure-changed == 'true' ||
+      needs.detect-changes.outputs.database-changed == 'true'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl mongodb-clients
+      
+      - name: Build application image
+        run: |
+          docker build -t shepherd:test .
+      
+      - name: Start MongoDB replica set
+        run: |
+          # Make init script executable
+          chmod +x init-mongo-replica.sh
+          
+          # Start the replica set
+          docker-compose up -d
+          
+          # Wait for initialization
+          echo "Waiting for MongoDB replica set initialization..."
+          timeout 300 bash -c 'until docker exec mongo-primary mongosh --eval "rs.status()" | grep -q "PRIMARY"; do sleep 5; done'
+      
+      - name: Verify replica set health
+        run: |
+          echo "Checking replica set status..."
+          docker exec mongo-primary mongosh --eval "rs.status()"
+          
+          # Verify we have a primary and at least one secondary
+          primary_count=$(docker exec mongo-primary mongosh --quiet --eval "JSON.stringify(rs.status())" | jq '[.members[] | select(.stateStr == "PRIMARY")] | length')
+          secondary_count=$(docker exec mongo-primary mongosh --quiet --eval "JSON.stringify(rs.status())" | jq '[.members[] | select(.stateStr == "SECONDARY")] | length')
+          
+          echo "Primary nodes: $primary_count"
+          echo "Secondary nodes: $secondary_count"
+          
+          if [ "$primary_count" -ne 1 ] || [ "$secondary_count" -lt 1 ]; then
+            echo "❌ Replica set not properly configured"
+            exit 1
+          fi
+          
+          echo "✅ Replica set is healthy"
+      
+      - name: Test application connectivity
+        run: |
+          # Wait for application to be ready
+          timeout 120 bash -c 'until curl -f http://localhost:5000/health; do sleep 5; done'
+          
+          # Test basic API functionality
+          response=$(curl -s http://localhost:5000/health)
+          echo "Health check response: $response"
+          
+          if echo "$response" | jq -e '.status == "healthy"'; then
+            echo "✅ Application health check passed"
+          else
+            echo "❌ Application health check failed"
+            exit 1
+          fi
+      
+      - name: Run comprehensive DR tests
+        run: |
+          # Make test script executable
+          chmod +x scripts/test-dr.sh
+          
+          # Run DR tests
+          ./scripts/test-dr.sh --timeout $TEST_TIMEOUT --rto-target $RTO_TARGET --rpo-target $RPO_TARGET
+        env:
+          DEPLOYMENT_TYPE: docker-compose
+      
+      - name: Test primary node failover
+        if: github.event.inputs.test_type == 'comprehensive' || github.event.inputs.test_type == 'failover-simulation'
+        run: |
+          echo "🔄 Testing primary node failover..."
+          
+          # Get current primary
+          current_primary=$(docker exec mongo-primary mongosh --quiet --eval "JSON.stringify(rs.status())" | jq -r '.members[] | select(.stateStr == "PRIMARY") | .name')
+          echo "Current primary: $current_primary"
+          
+          # Stop primary container
+          echo "Stopping primary container..."
+          docker stop mongo-primary
+          
+          # Wait for election
+          echo "Waiting for new primary election..."
+          sleep 30
+          
+          # Check if new primary elected
+          new_primary=$(docker exec mongo-secondary-1 mongosh --quiet --eval "JSON.stringify(rs.status())" | jq -r '.members[] | select(.stateStr == "PRIMARY") | .name' 2>/dev/null || echo "")
+          
+          if [ -n "$new_primary" ] && [ "$new_primary" != "$current_primary" ]; then
+            echo "✅ Failover successful: $current_primary -> $new_primary"
+          else
+            echo "❌ Failover failed"
+            # Restart original primary for cleanup
+            docker start mongo-primary
+            exit 1
+          fi
+          
+          # Restart original primary
+          echo "Restarting original primary..."
+          docker start mongo-primary
+          sleep 10
+          
+          # Verify cluster is stable
+          docker exec mongo-primary mongosh --eval "rs.status()"
+      
+      - name: Test backup and restore
+        if: github.event.inputs.test_type == 'comprehensive'
+        run: |
+          echo "🔄 Testing backup and restore..."
+          
+          # Create test data
+          test_doc='{"test_id":"dr_test_'$(date +%s)'","test_data":"GitHub Actions DR test"}'
+          docker exec mongo-primary mongosh shepherd_cms --eval "db.dr_test.insertOne($test_doc)"
+          
+          # Create backup
+          backup_name="github_actions_test_$(date +%Y%m%d_%H%M%S)"
+          docker exec mongo-primary mongodump --host mongo-primary:27017 --db shepherd_cms --collection dr_test --out "/backup/$backup_name"
+          
+          # Verify backup exists
+          if docker exec mongo-primary ls "/backup/$backup_name/shepherd_cms/dr_test.bson"; then
+            echo "✅ Backup created successfully"
+          else
+            echo "❌ Backup creation failed"
+            exit 1
+          fi
+          
+          # Drop collection
+          docker exec mongo-primary mongosh shepherd_cms --eval "db.dr_test.drop()"
+          
+          # Restore from backup
+          docker exec mongo-primary mongorestore --host mongo-primary:27017 --db shepherd_cms "/backup/$backup_name/shepherd_cms/"
+          
+          # Verify restored data
+          restored_count=$(docker exec mongo-primary mongosh shepherd_cms --quiet --eval "db.dr_test.countDocuments()" 2>/dev/null || echo "0")
+          
+          if [ "$restored_count" -gt 0 ]; then
+            echo "✅ Backup and restore test passed"
+            # Cleanup
+            docker exec mongo-primary mongosh shepherd_cms --eval "db.dr_test.drop()"
+            docker exec mongo-primary rm -rf "/backup/$backup_name"
+          else
+            echo "❌ Backup and restore test failed"
+            exit 1
+          fi
+      
+      - name: Cleanup Docker Compose
+        if: always()
+        run: |
+          docker-compose down -v
+          docker system prune -f
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-compose-dr-test-results
+          path: |
+            /tmp/shepherd-dr-*.log
+            /tmp/shepherd-dr-*.json
+          retention-days: 30
+
+  kubernetes-dr-test:
+    name: Kubernetes DR Test
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 0') ||
+      github.event.inputs.deployment_target == 'kubernetes' ||
+      needs.detect-changes.outputs.infrastructure-changed == 'true'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Kubernetes (kind)
+        uses: helm/kind-action@v1.8.0
+        with:
+          cluster_name: shepherd-dr-test
+          kubectl_version: ${{ env.KUBECTL_VERSION }}
+      
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: ${{ env.HELM_VERSION }}
+      
+      - name: Build and load Docker image
+        run: |
+          docker build -t shepherd:test .
+          kind load docker-image shepherd:test --name shepherd-dr-test
+      
+      - name: Deploy Shepherd with internal MongoDB
+        run: |
+          # Create values file for testing
+          cat > test-values.yaml << EOF
+          app:
+            image:
+              repository: shepherd
+              tag: test
+            secrets:
+              secretKey: "test-secret-key-for-github-actions"
+            replicaCount: 2
+          
+          mongodb:
+            internal:
+              enabled: true
+              replicaSet:
+                enabled: true
+                replicas: 3
+              persistence:
+                enabled: true
+                size: 1Gi
+          
+          backup:
+            enabled: true
+            schedule: "*/5 * * * *"  # Every 5 minutes for testing
+            retention: "1h"
+          
+          autoscaling:
+            enabled: false
+          
+          serviceMonitor:
+            enabled: false
+          EOF
+          
+          # Deploy Helm chart
+          helm install shepherd ./helm/shepherd -f test-values.yaml --wait --timeout=10m
+      
+      - name: Wait for MongoDB replica set initialization
+        run: |
+          echo "Waiting for MongoDB replica set to be ready..."
+          kubectl wait --for=condition=ready pod/mongodb-0 --timeout=300s
+          kubectl wait --for=condition=ready pod/mongodb-1 --timeout=300s
+          kubectl wait --for=condition=ready pod/mongodb-2 --timeout=300s
+          
+          # Wait for replica set initialization
+          timeout 300 bash -c 'until kubectl exec mongodb-0 -- mongosh --eval "rs.status()" | grep -q "PRIMARY"; do sleep 10; done'
+      
+      - name: Verify Kubernetes deployment
+        run: |
+          echo "Checking pod status..."
+          kubectl get pods -l app.kubernetes.io/name=shepherd
+          kubectl get pods -l app.kubernetes.io/component=mongodb
+          
+          echo "Checking replica set status..."
+          kubectl exec mongodb-0 -- mongosh --eval "rs.status()"
+          
+          # Verify replica set health
+          primary_count=$(kubectl exec mongodb-0 -- mongosh --quiet --eval "JSON.stringify(rs.status())" | jq '[.members[] | select(.stateStr == "PRIMARY")] | length')
+          secondary_count=$(kubectl exec mongodb-0 -- mongosh --quiet --eval "JSON.stringify(rs.status())" | jq '[.members[] | select(.stateStr == "SECONDARY")] | length')
+          
+          echo "Primary nodes: $primary_count"
+          echo "Secondary nodes: $secondary_count"
+          
+          if [ "$primary_count" -ne 1 ] || [ "$secondary_count" -lt 1 ]; then
+            echo "❌ Replica set not properly configured"
+            kubectl logs mongodb-0
+            exit 1
+          fi
+          
+          echo "✅ Kubernetes deployment is healthy"
+      
+      - name: Test application accessibility
+        run: |
+          # Port forward to access the application
+          kubectl port-forward service/shepherd-app 8080:5000 &
+          port_forward_pid=$!
+          
+          # Wait for port forward to be ready
+          sleep 10
+          
+          # Test health endpoint
+          timeout 60 bash -c 'until curl -f http://localhost:8080/health; do sleep 5; done'
+          
+          response=$(curl -s http://localhost:8080/health)
+          echo "Health check response: $response"
+          
+          if echo "$response" | jq -e '.status == "healthy"'; then
+            echo "✅ Application accessibility test passed"
+          else
+            echo "❌ Application accessibility test failed"
+            kubectl logs -l app.kubernetes.io/name=shepherd
+            kill $port_forward_pid
+            exit 1
+          fi
+          
+          # Cleanup port forward
+          kill $port_forward_pid
+      
+      - name: Test pod failure recovery
+        if: github.event.inputs.test_type == 'comprehensive' || github.event.inputs.test_type == 'failover-simulation'
+        run: |
+          echo "🔄 Testing pod failure recovery..."
+          
+          # Delete one MongoDB pod
+          kubectl delete pod mongodb-1
+          
+          # Wait for pod to be recreated
+          kubectl wait --for=condition=ready pod/mongodb-1 --timeout=300s
+          
+          # Verify replica set is still healthy
+          sleep 30
+          kubectl exec mongodb-0 -- mongosh --eval "rs.status()"
+          
+          primary_count=$(kubectl exec mongodb-0 -- mongosh --quiet --eval "JSON.stringify(rs.status())" | jq '[.members[] | select(.stateStr == "PRIMARY")] | length')
+          
+          if [ "$primary_count" -eq 1 ]; then
+            echo "✅ Pod failure recovery test passed"
+          else
+            echo "❌ Pod failure recovery test failed"
+            exit 1
+          fi
+      
+      - name: Test backup job
+        if: github.event.inputs.test_type == 'comprehensive'
+        run: |
+          echo "🔄 Testing backup job..."
+          
+          # Trigger manual backup
+          kubectl create job --from=cronjob/mongodb-backup mongodb-backup-manual-$(date +%s)
+          
+          # Wait for job completion
+          kubectl wait --for=condition=complete job/mongodb-backup-manual-* --timeout=300s
+          
+          # Check job logs
+          job_name=$(kubectl get jobs -l job-name=mongodb-backup-manual -o jsonpath='{.items[0].metadata.name}')
+          kubectl logs job/$job_name
+          
+          # Verify job succeeded
+          job_status=$(kubectl get job $job_name -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}')
+          
+          if [ "$job_status" = "True" ]; then
+            echo "✅ Backup job test passed"
+          else
+            echo "❌ Backup job test failed"
+            exit 1
+          fi
+      
+      - name: Cleanup Kubernetes
+        if: always()
+        run: |
+          helm uninstall shepherd || true
+          kubectl delete pvc --all || true
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubernetes-dr-test-results
+          path: |
+            /tmp/shepherd-dr-*.log
+            /tmp/shepherd-dr-*.json
+          retention-days: 30
+
+  aws-dr-test:
+    name: AWS DR Test
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 0') ||
+      github.event.inputs.deployment_target == 'aws' ||
+      (needs.detect-changes.outputs.infrastructure-changed == 'true' && contains(github.event.head_commit.message, '[aws-test]'))
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+      
+      - name: Terraform Plan (Dry Run)
+        working-directory: terraform/aws
+        run: |
+          # Initialize Terraform
+          terraform init
+          
+          # Create test variables
+          cat > terraform.tfvars << EOF
+          project_name = "shepherd-dr-test"
+          environment = "github-actions"
+          aws_region = "${{ env.AWS_REGION }}"
+          docker_image = "nginx:latest"  # Placeholder for DR test
+          
+          # DR Configuration
+          documentdb_backup_retention_period = 7  # Reduced for testing
+          documentdb_deletion_protection = false  # Allow cleanup
+          rto_target_minutes = 60
+          rpo_target_minutes = 15
+          
+          # Test configuration
+          documentdb_instance_class = "db.t3.medium"
+          ecs_task_cpu = 256
+          ecs_task_memory = 512
+          EOF
+          
+          # Plan deployment (dry run)
+          terraform plan -out=tfplan
+          
+          echo "✅ Terraform plan completed successfully"
+      
+      - name: Test backup verification function
+        run: |
+          echo "🔄 Testing backup verification logic..."
+          
+          # Validate backup verification Lambda function
+          python3 -c "
+          import json
+          import sys
+          
+          # Read the backup verification function
+          with open('terraform/aws/backup_verification.py', 'r') as f:
+              content = f.read()
+          
+          # Basic syntax validation
+          try:
+              compile(content, 'backup_verification.py', 'exec')
+              print('✅ Lambda function syntax is valid')
+          except SyntaxError as e:
+              print(f'❌ Lambda function syntax error: {e}')
+              sys.exit(1)
+          
+          # Check for required imports and functions
+          required_elements = ['boto3', 'lambda_handler', 'docdb', 'sns']
+          for element in required_elements:
+              if element not in content:
+                  print(f'❌ Missing required element: {element}')
+                  sys.exit(1)
+          
+          print('✅ Backup verification function validation passed')
+          "
+      
+      - name: Validate AWS resources configuration
+        working-directory: terraform/aws
+        run: |
+          echo "🔄 Validating AWS resources configuration..."
+          
+          # Validate Terraform configuration
+          terraform validate
+          
+          # Check for DR-specific configurations
+          if grep -q "backup_retention_period.*30" *.tf; then
+            echo "✅ Backup retention configured correctly"
+          else
+            echo "❌ Backup retention not configured"
+            exit 1
+          fi
+          
+          if grep -q "deletion_protection.*true" *.tf; then
+            echo "✅ Deletion protection configured"
+          else
+            echo "⚠️ Deletion protection not enabled by default"
+          fi
+          
+          if grep -q "multi_az.*true" *.tf; then
+            echo "✅ Multi-AZ configuration found"
+          else
+            echo "❌ Multi-AZ configuration missing"
+            exit 1
+          fi
+          
+          echo "✅ AWS configuration validation passed"
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aws-dr-test-results
+          path: |
+            terraform/aws/tfplan
+            terraform/aws/*.tfvars
+          retention-days: 30
+
+  consolidate-results:
+    name: Consolidate Test Results
+    runs-on: ubuntu-latest
+    needs: [docker-compose-dr-test, kubernetes-dr-test, aws-dr-test]
+    if: always()
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Download all test results
+        uses: actions/download-artifact@v4
+        with:
+          path: test-results
+      
+      - name: Generate consolidated report
+        run: |
+          echo "# Disaster Recovery Test Report" > dr-test-report.md
+          echo "**Test Date:** $(date -u)" >> dr-test-report.md
+          echo "**Trigger:** ${{ github.event_name }}" >> dr-test-report.md
+          echo "" >> dr-test-report.md
+          
+          # Check job statuses
+          echo "## Test Results Summary" >> dr-test-report.md
+          echo "" >> dr-test-report.md
+          
+          # Docker Compose results
+          if [ "${{ needs.docker-compose-dr-test.result }}" = "success" ]; then
+            echo "✅ **Docker Compose DR Test:** PASSED" >> dr-test-report.md
+          elif [ "${{ needs.docker-compose-dr-test.result }}" = "failure" ]; then
+            echo "❌ **Docker Compose DR Test:** FAILED" >> dr-test-report.md
+          else
+            echo "⏭️ **Docker Compose DR Test:** SKIPPED" >> dr-test-report.md
+          fi
+          
+          # Kubernetes results
+          if [ "${{ needs.kubernetes-dr-test.result }}" = "success" ]; then
+            echo "✅ **Kubernetes DR Test:** PASSED" >> dr-test-report.md
+          elif [ "${{ needs.kubernetes-dr-test.result }}" = "failure" ]; then
+            echo "❌ **Kubernetes DR Test:** FAILED" >> dr-test-report.md
+          else
+            echo "⏭️ **Kubernetes DR Test:** SKIPPED" >> dr-test-report.md
+          fi
+          
+          # AWS results
+          if [ "${{ needs.aws-dr-test.result }}" = "success" ]; then
+            echo "✅ **AWS DR Test:** PASSED" >> dr-test-report.md
+          elif [ "${{ needs.aws-dr-test.result }}" = "failure" ]; then
+            echo "❌ **AWS DR Test:** FAILED" >> dr-test-report.md
+          else
+            echo "⏭️ **AWS DR Test:** SKIPPED" >> dr-test-report.md
+          fi
+          
+          echo "" >> dr-test-report.md
+          echo "## RTO/RPO Compliance" >> dr-test-report.md
+          echo "- **RTO Target:** ${{ env.RTO_TARGET }} seconds (60 minutes)" >> dr-test-report.md
+          echo "- **RPO Target:** ${{ env.RPO_TARGET }} seconds (15 minutes)" >> dr-test-report.md
+          echo "" >> dr-test-report.md
+          
+          # Add recommendations if any tests failed
+          if [ "${{ needs.docker-compose-dr-test.result }}" = "failure" ] || [ "${{ needs.kubernetes-dr-test.result }}" = "failure" ] || [ "${{ needs.aws-dr-test.result }}" = "failure" ]; then
+            echo "## Recommendations" >> dr-test-report.md
+            echo "- Review failed test logs in the artifacts" >> dr-test-report.md
+            echo "- Check infrastructure changes for compatibility" >> dr-test-report.md
+            echo "- Verify backup and restore procedures" >> dr-test-report.md
+            echo "- Update disaster recovery documentation if needed" >> dr-test-report.md
+          fi
+          
+          cat dr-test-report.md
+      
+      - name: Upload consolidated report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dr-test-consolidated-report
+          path: dr-test-report.md
+          retention-days: 90
+
+  notify-results:
+    name: Notify Test Results
+    runs-on: ubuntu-latest
+    needs: [consolidate-results, docker-compose-dr-test, kubernetes-dr-test, aws-dr-test]
+    if: always() && (failure() || github.event.inputs.notify_on_success == 'true')
+    
+    steps:
+      - name: Determine notification type
+        id: notification
+        run: |
+          if [ "${{ needs.docker-compose-dr-test.result }}" = "failure" ] || [ "${{ needs.kubernetes-dr-test.result }}" = "failure" ] || [ "${{ needs.aws-dr-test.result }}" = "failure" ]; then
+            echo "type=failure" >> $GITHUB_OUTPUT
+            echo "emoji=🚨" >> $GITHUB_OUTPUT
+            echo "title=Disaster Recovery Tests FAILED" >> $GITHUB_OUTPUT
+          else
+            echo "type=success" >> $GITHUB_OUTPUT
+            echo "emoji=✅" >> $GITHUB_OUTPUT
+            echo "title=Disaster Recovery Tests PASSED" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Send Slack notification
+        if: env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{
+              "text": "${{ steps.notification.outputs.emoji }} ${{ steps.notification.outputs.title }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ steps.notification.outputs.emoji }} *${{ steps.notification.outputs.title }}*\n\n*Repository:* ${{ github.repository }}\n*Workflow:* ${{ github.workflow }}\n*Trigger:* ${{ github.event_name }}\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|#${{ github.run_number }}>"
+                  }
+                }
+              ]
+            }' \
+            $SLACK_WEBHOOK_URL
+      
+      - name: Create GitHub issue for failures
+        if: steps.notification.outputs.type == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🚨 Disaster Recovery Tests Failed',
+              body: `## Disaster Recovery Test Failure Report
+              
+              **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+              **Date:** ${new Date().toISOString()}
+              **Trigger:** ${{ github.event_name }}
+              
+              ### Failed Tests:
+              - Docker Compose: ${{ needs.docker-compose-dr-test.result }}
+              - Kubernetes: ${{ needs.kubernetes-dr-test.result }}
+              - AWS: ${{ needs.aws-dr-test.result }}
+              
+              ### Action Required:
+              1. Review the test logs in the workflow artifacts
+              2. Fix any identified issues
+              3. Re-run the disaster recovery tests
+              4. Update DR documentation if procedures have changed
+              
+              ### Related Documentation:
+              - [Disaster Recovery Runbook](docs/disaster-recovery.md)
+              - [Backup Procedures](docs/backup-procedures.md)
+              
+              **This issue was automatically created by the DR testing workflow.**`,
+              labels: ['bug', 'high-priority', 'disaster-recovery']
+            });
+            
+            console.log('Created issue:', issue.data.html_url);

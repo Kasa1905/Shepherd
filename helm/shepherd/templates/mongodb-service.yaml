@@ -1,0 +1,80 @@
+{{- if .Values.mongodb.internal.enabled }}
+---
+# Headless Service for StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "shepherd.fullname" . }}-mongodb-headless
+  labels:
+    {{- include "shepherd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "shepherd.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+  ports:
+  - name: mongodb
+    port: 27017
+    targetPort: mongodb
+    protocol: TCP
+
+---
+# Client Service for application connections
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "shepherd.fullname" . }}-mongodb
+  labels:
+    {{- include "shepherd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9216"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  selector:
+    {{- include "shepherd.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+  ports:
+  - name: mongodb
+    port: 27017
+    targetPort: mongodb
+    protocol: TCP
+  - name: metrics
+    port: 9216
+    targetPort: metrics
+    protocol: TCP
+
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+---
+# ServiceMonitor for Prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "shepherd.fullname" . }}-mongodb
+  labels:
+    {{- include "shepherd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+  {{- if .Values.monitoring.serviceMonitor.namespace }}
+  namespace: {{ .Values.monitoring.serviceMonitor.namespace }}
+  {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "shepherd.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mongodb
+  endpoints:
+  - port: metrics
+    interval: {{ .Values.monitoring.serviceMonitor.interval }}
+    path: {{ .Values.monitoring.serviceMonitor.path }}
+    scrapeTimeout: 30s
+{{- end }}
+
+{{- end }}

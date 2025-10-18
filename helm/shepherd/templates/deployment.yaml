@@ -1,0 +1,191 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "shepherd.fullname" . }}
+  labels:
+    {{- include "shepherd.labels" . | nindent 4 }}
+  annotations:
+    git-commit: {{ .Values.app.image.tag }}
+    deployed-at: {{ now | date "2006-01-02T15:04:05Z07:00" }}
+    deployment.kubernetes.io/revision: {{ .Release.Revision | quote }}
+    {{- with .Values.app.deploymentAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.app.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: {{ .Values.app.strategy.revisionHistoryLimit | default 10 }}
+  strategy:
+    type: {{ .Values.app.strategy.type | default "RollingUpdate" }}
+    {{- if eq (.Values.app.strategy.type | default "RollingUpdate") "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ .Values.app.strategy.rollingUpdate.maxSurge | default 1 }}
+      maxUnavailable: {{ .Values.app.strategy.rollingUpdate.maxUnavailable | default 0 }}
+    {{- end }}
+  minReadySeconds: {{ .Values.app.strategy.minReadySeconds | default 30 }}
+  progressDeadlineSeconds: {{ .Values.app.strategy.progressDeadlineSeconds | default 600 }}
+  selector:
+    matchLabels:
+      {{- include "shepherd.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        kubectl.kubernetes.io/restartedAt: {{ now | date "2006-01-02T15:04:05Z07:00" }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "shepherd.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "shepherd.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.app.securityContext | nindent 8 }}
+      {{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.app.securityContext | nindent 12 }}
+          image: "{{ .Values.global.imageRegistry | default .Values.app.image.registry }}/{{ .Values.app.image.repository }}:{{ .Values.app.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.app.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 15"]
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: {{ .Values.app.livenessProbe.initialDelaySeconds | default 30 }}
+            periodSeconds: {{ .Values.app.livenessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.app.livenessProbe.timeoutSeconds | default 10 }}
+            failureThreshold: {{ .Values.app.livenessProbe.failureThreshold | default 3 }}
+          {{- if .Values.app.startupProbe }}
+          startupProbe:
+            {{- toYaml .Values.app.startupProbe | nindent 12 }}
+          {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: {{ .Values.app.readinessProbe.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ .Values.app.readinessProbe.periodSeconds | default 5 }}
+            timeoutSeconds: {{ .Values.app.readinessProbe.timeoutSeconds | default 10 }}
+            failureThreshold: {{ .Values.app.readinessProbe.failureThreshold | default 3 }}
+          env:
+            - name: PORT
+              value: {{ .Values.service.targetPort | quote }}
+            {{- if .Values.mongodb.external.enabled }}
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shepherd.fullname" . }}-secret
+                  key: mongodb-uri
+            - name: MONGODB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shepherd.fullname" . }}-secret
+                  key: mongodb-username
+            - name: MONGODB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shepherd.fullname" . }}-secret
+                  key: mongodb-password
+            - name: MONGODB_AUTH_SOURCE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shepherd.fullname" . }}-secret
+                  key: mongodb-auth-source
+            {{- else if .Values.mongodb.internal.enabled }}
+            - name: MONGODB_URI
+              value: "mongodb://{{ include "shepherd.fullname" . }}-mongodb:27017/{{ .Values.mongodb.external.database }}"
+            {{- end }}
+            - name: DATABASE_NAME
+              value: {{ .Values.mongodb.external.database | quote }}
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shepherd.fullname" . }}-secret
+                  key: secret-key
+            {{- if .Values.app.secrets.webhookSecret }}
+            - name: WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shepherd.fullname" . }}-secret
+                  key: webhook-secret
+            {{- end }}
+            {{- if .Values.webhooks.urls }}
+            - name: WEBHOOK_URLS
+              value: {{ join "," .Values.webhooks.urls | quote }}
+            {{- end }}
+            {{- range $key, $value := .Values.app.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "shepherd.fullname" . }}-config
+          resources:
+            {{- toYaml .Values.app.resources | nindent 12 }}
+          {{- if or .Values.persistence.enabled .Values.extraVolumeMounts (and .Values.mongodb.external.enabled .Values.mongodb.external.ssl .Values.mongodb.external.sslCA) }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: /app/data
+            {{- end }}
+            {{- if and .Values.mongodb.external.enabled .Values.mongodb.external.ssl .Values.mongodb.external.sslCA }}
+            - name: ssl-ca-certs
+              mountPath: /opt/ssl
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or .Values.persistence.enabled .Values.extraVolumes (and .Values.mongodb.external.enabled .Values.mongodb.external.ssl .Values.mongodb.external.sslCA) }}
+      volumes:
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "shepherd.fullname" . }}-data
+        {{- end }}
+        {{- if and .Values.mongodb.external.enabled .Values.mongodb.external.ssl .Values.mongodb.external.sslCA }}
+        - name: ssl-ca-certs
+          configMap:
+            name: {{ include "shepherd.fullname" . }}-ssl-ca
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

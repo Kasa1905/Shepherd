@@ -1,0 +1,321 @@
+{{- if .Values.mongodb.internal.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "shepherd.fullname" . }}-mongodb
+  labels:
+    {{- include "shepherd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongodb
+spec:
+  serviceName: {{ include "shepherd.fullname" . }}-mongodb-headless
+  replicas: {{ .Values.mongodb.internal.replicaSet.replicas }}
+  selector:
+    matchLabels:
+      {{- include "shepherd.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mongodb
+  template:
+    metadata:
+      labels:
+        {{- include "shepherd.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: mongodb
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        fsGroup: 999
+        runAsUser: 999
+        runAsNonRoot: true
+      {{- if .Values.mongodb.internal.affinity }}
+      affinity:
+        {{- toYaml .Values.mongodb.internal.affinity | nindent 8 }}
+      {{- end }}
+      initContainers:
+      # Initialize replica set on the first pod
+      - name: replica-set-init
+        image: "{{ .Values.mongodb.internal.image.registry }}/{{ .Values.mongodb.internal.image.repository }}:{{ .Values.mongodb.internal.image.tag }}"
+        imagePullPolicy: {{ .Values.mongodb.internal.image.pullPolicy }}
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          
+          # Only run on the first pod (mongodb-0)
+          if [[ "${HOSTNAME}" != *"-0" ]]; then
+            echo "Not the first pod, skipping replica set initialization"
+            exit 0
+          fi
+          
+          echo "Waiting for MongoDB to be ready on all pods..."
+          
+          # Wait for all MongoDB instances to be ready
+          for i in $(seq 0 $((${REPLICA_COUNT} - 1))); do
+            while ! mongosh --host "${SERVICE_NAME}-${i}.${SERVICE_NAME}-headless:27017" --eval "db.runCommand('ping').ok" --quiet; do
+              echo "Waiting for ${SERVICE_NAME}-${i} to be ready..."
+              sleep 5
+            done
+          done
+          
+          echo "All MongoDB instances are ready. Checking replica set status..."
+          
+          # Check if replica set is already initialized
+          if mongosh --host "${HOSTNAME}.${SERVICE_NAME}-headless:27017" --eval "rs.status()" --quiet 2>/dev/null; then
+            echo "Replica set already initialized"
+            exit 0
+          fi
+          
+          echo "Initializing replica set..."
+          
+          # Build replica set configuration
+          RS_CONFIG="{"
+          RS_CONFIG="${RS_CONFIG} _id: '${REPLICA_SET_NAME}',"
+          RS_CONFIG="${RS_CONFIG} version: 1,"
+          RS_CONFIG="${RS_CONFIG} members: ["
+          
+          for i in $(seq 0 $((${REPLICA_COUNT} - 1))); do
+            if [ $i -gt 0 ]; then
+              RS_CONFIG="${RS_CONFIG},"
+            fi
+            PRIORITY=1
+            if [ $i -eq 0 ]; then
+              PRIORITY=2  # Higher priority for first node
+            fi
+            RS_CONFIG="${RS_CONFIG} { _id: $i, host: '${SERVICE_NAME}-${i}.${SERVICE_NAME}-headless:27017', priority: $PRIORITY }"
+          done
+          
+          RS_CONFIG="${RS_CONFIG} ]"
+          RS_CONFIG="${RS_CONFIG} }"
+          
+          echo "Replica set config: ${RS_CONFIG}"
+          
+          # Initialize replica set
+          mongosh --host "${HOSTNAME}.${SERVICE_NAME}-headless:27017" --eval "rs.initiate(${RS_CONFIG})" --quiet
+          
+          echo "Waiting for replica set to be ready..."
+          
+          # Wait for primary election
+          timeout=300
+          elapsed=0
+          while [ $elapsed -lt $timeout ]; do
+            if mongosh --host "${HOSTNAME}.${SERVICE_NAME}-headless:27017" --eval "rs.status().myState" --quiet 2>/dev/null | grep -q "1"; then
+              echo "Primary elected successfully"
+              break
+            fi
+            echo "Waiting for primary election... (${elapsed}/${timeout}s)"
+            sleep 5
+            elapsed=$((elapsed + 5))
+          done
+          
+          if [ $elapsed -ge $timeout ]; then
+            echo "Timeout waiting for primary election"
+            exit 1
+          fi
+          
+          {{- if .Values.mongodb.internal.auth.enabled }}
+          echo "Creating admin user..."
+          mongosh --host "${HOSTNAME}.${SERVICE_NAME}-headless:27017" --eval "
+            use admin;
+            db.createUser({
+              user: '${MONGODB_ROOT_USERNAME}',
+              pwd: '${MONGODB_ROOT_PASSWORD}',
+              roles: [{ role: 'root', db: 'admin' }]
+            })
+          " --quiet
+          
+          echo "Creating application user..."
+          mongosh --host "${HOSTNAME}.${SERVICE_NAME}-headless:27017" --eval "
+            use admin;
+            db.auth('${MONGODB_ROOT_USERNAME}', '${MONGODB_ROOT_PASSWORD}');
+            use ${MONGODB_DATABASE};
+            db.createUser({
+              user: '${MONGODB_USERNAME}',
+              pwd: '${MONGODB_PASSWORD}',
+              roles: [{ role: 'readWrite', db: '${MONGODB_DATABASE}' }]
+            })
+          " --quiet
+          {{- end }}
+          
+          echo "Replica set initialization completed successfully"
+        env:
+        - name: REPLICA_SET_NAME
+          value: {{ .Values.mongodb.internal.replicaSet.name | quote }}
+        - name: REPLICA_COUNT
+          value: {{ .Values.mongodb.internal.replicaSet.replicas | quote }}
+        - name: SERVICE_NAME
+          value: {{ include "shepherd.fullname" . }}-mongodb
+        {{- if .Values.mongodb.internal.auth.enabled }}
+        - name: MONGODB_ROOT_USERNAME
+          value: {{ .Values.mongodb.internal.auth.rootUsername | quote }}
+        - name: MONGODB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "shepherd.fullname" . }}-mongodb-secret
+              key: mongodb-root-password
+        - name: MONGODB_USERNAME
+          value: {{ .Values.mongodb.internal.auth.username | quote }}
+        - name: MONGODB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "shepherd.fullname" . }}-mongodb-secret
+              key: mongodb-password
+        - name: MONGODB_DATABASE
+          value: {{ .Values.mongodb.internal.auth.database | quote }}
+        {{- end }}
+      containers:
+      - name: mongodb
+        image: "{{ .Values.mongodb.internal.image.registry }}/{{ .Values.mongodb.internal.image.repository }}:{{ .Values.mongodb.internal.image.tag }}"
+        imagePullPolicy: {{ .Values.mongodb.internal.image.pullPolicy }}
+        command:
+        - mongod
+        - --replSet={{ .Values.mongodb.internal.replicaSet.name }}
+        - --bind_ip_all
+        {{- if .Values.mongodb.internal.auth.enabled }}
+        - --auth
+        {{- end }}
+        - --wiredTigerCacheSizeGB=0.25
+        ports:
+        - name: mongodb
+          containerPort: 27017
+          protocol: TCP
+        env:
+        {{- if .Values.mongodb.internal.auth.enabled }}
+        - name: MONGO_INITDB_ROOT_USERNAME
+          value: {{ .Values.mongodb.internal.auth.rootUsername | quote }}
+        - name: MONGO_INITDB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "shepherd.fullname" . }}-mongodb-secret
+              key: mongodb-root-password
+        {{- end }}
+        livenessProbe:
+          exec:
+            command:
+            - mongosh
+            {{- if .Values.mongodb.internal.auth.enabled }}
+            - --username
+            - $(MONGODB_ROOT_USERNAME)
+            - --password
+            - $(MONGODB_ROOT_PASSWORD)
+            - --authenticationDatabase
+            - admin
+            {{- end }}
+            - --eval
+            - "db.runCommand('ping').ok"
+            - --quiet
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - mongosh
+            {{- if .Values.mongodb.internal.auth.enabled }}
+            - --username
+            - $(MONGODB_ROOT_USERNAME)
+            - --password
+            - $(MONGODB_ROOT_PASSWORD)
+            - --authenticationDatabase
+            - admin
+            {{- end }}
+            - --eval
+            - |
+              if (db.runCommand('ping').ok !== 1) { quit(1) }
+              if (rs.status().myState === 1 || rs.status().myState === 2) { quit(0) }
+              quit(1)
+            - --quiet
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          {{- toYaml .Values.mongodb.internal.resources | nindent 10 }}
+        volumeMounts:
+        - name: mongodb-data
+          mountPath: /data/db
+        - name: mongodb-config
+          mountPath: /data/configdb
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 999
+          capabilities:
+            drop:
+            - ALL
+      # Sidecar container for replica set monitoring
+      - name: mongodb-exporter
+        image: percona/mongodb_exporter:0.37
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/mongodb_exporter
+        - --mongodb.uri=mongodb://localhost:27017
+        - --web.listen-address=:9216
+        - --collect-all
+        ports:
+        - name: metrics
+          containerPort: 9216
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /
+            port: metrics
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: metrics
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          capabilities:
+            drop:
+            - ALL
+  volumeClaimTemplates:
+  - metadata:
+      name: mongodb-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      {{- if .Values.mongodb.internal.persistence.storageClass }}
+      {{- if (eq "-" .Values.mongodb.internal.persistence.storageClass) }}
+      storageClassName: ""
+      {{- else }}
+      storageClassName: {{ .Values.mongodb.internal.persistence.storageClass | quote }}
+      {{- end }}
+      {{- end }}
+      resources:
+        requests:
+          storage: {{ .Values.mongodb.internal.persistence.size }}
+      {{- with .Values.mongodb.internal.persistence.annotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  - metadata:
+      name: mongodb-config
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      {{- if .Values.mongodb.internal.persistence.storageClass }}
+      {{- if (eq "-" .Values.mongodb.internal.persistence.storageClass) }}
+      storageClassName: ""
+      {{- else }}
+      storageClassName: {{ .Values.mongodb.internal.persistence.storageClass | quote }}
+      {{- end }}
+      {{- end }}
+      resources:
+        requests:
+          storage: 1Gi
+{{- end }}

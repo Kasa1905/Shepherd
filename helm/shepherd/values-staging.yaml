@@ -1,0 +1,281 @@
+# Helm values for Shepherd staging environment
+# Optimized for rapid iteration while maintaining production-like behavior
+
+# Global configuration
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# Application configuration
+app:
+  name: shepherd
+  image:
+    registry: docker.io
+    repository: shepherd/shepherd
+    tag: latest  # Use latest tag for staging
+    pullPolicy: Always  # Always pull latest images
+  
+  # Lower replica count for staging
+  replicaCount: 2
+  
+  # Deployment strategy - aggressive settings for faster deployment
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2              # Allow 2 extra pods during rollout
+      maxUnavailable: 0        # Ensure no pods are unavailable
+    minReadySeconds: 10        # Faster readiness for staging
+    progressDeadlineSeconds: 300  # 5 min timeout for staging
+  
+  # Environment variables for staging
+  env:
+    FLASK_ENV: staging
+    FLASK_DEBUG: "False"
+    LOG_FORMAT: json
+    LOG_LEVEL: DEBUG  # More verbose logging for staging
+    METRICS_ENABLED: "True"
+    WEBHOOK_ENABLED: "True"
+    WEBHOOK_EVENTS: "config.created,config.updated,config.rolled_back"
+    WEBHOOK_TIMEOUT: "10"
+    WEBHOOK_RETRY_ATTEMPTS: "3"
+    WEBHOOK_RETRY_DELAY: "1"
+  
+  # Secrets (set via --set or external secret management)
+  secrets:
+    secretKey: ""
+    webhookSecret: ""
+  
+  # Reduced resource limits for staging
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+  
+  # Health checks with faster response times
+  livenessProbe:
+    httpGet:
+      path: /api/health
+      port: http
+    initialDelaySeconds: 30  # Faster startup for staging
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  
+  readinessProbe:
+    httpGet:
+      path: /api/health
+      port: http
+    initialDelaySeconds: 10   # Faster initial readiness
+    periodSeconds: 5          # More frequent checks
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+  
+  # Security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 5000
+  annotations: {}
+
+# Ingress configuration for staging
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: shepherd-staging.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: shepherd-staging-tls
+      hosts:
+        - shepherd-staging.example.com
+
+# MongoDB configuration for staging
+mongodb:
+  # Use external MongoDB (staging cluster)
+  external:
+    enabled: true
+    hosts:
+      - mongodb-staging-0.mongodb-headless.staging.svc.cluster.local:27017
+      - mongodb-staging-1.mongodb-headless.staging.svc.cluster.local:27017
+      - mongodb-staging-2.mongodb-headless.staging.svc.cluster.local:27017
+    database: shepherd_staging
+    username: shepherd
+    password: ""  # Set via --set or external secret
+    authSource: shepherd_staging
+    ssl: false
+    replicaSet: "rs0-staging"
+    readPreference: "secondaryPreferred"
+    retryWrites: true
+    maxPoolSize: 25  # Smaller pool for staging
+    connectTimeoutMS: 10000
+    serverSelectionTimeoutMS: 15000
+    authenticationDatabase: shepherd_staging
+    authMechanism: "SCRAM-SHA-256"
+  
+  # Internal MongoDB disabled for staging
+  internal:
+    enabled: false
+
+# Backup configuration - minimal for staging
+backup:
+  enabled: false  # Disabled for staging
+
+# Monitoring configuration
+monitoring:
+  # Prometheus ServiceMonitor
+  serviceMonitor:
+    enabled: true
+    namespace: "monitoring"
+    interval: 30s
+    path: /metrics
+    
+  # Prometheus metrics
+  prometheus:
+    enabled: true
+    path: /metrics
+  
+  # Health checks
+  healthCheck:
+    enabled: true
+    path: /api/health
+
+# Autoscaling configuration for staging
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5  # Lower max for staging
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Blue/Green deployment configuration
+blueGreen:
+  enabled: false
+  activeService: blue
+  previewService: green
+
+# Pod Disruption Budget - relaxed for staging
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Network policies - more permissive for staging
+networkPolicy:
+  enabled: false
+
+# ServiceMonitor for Prometheus
+serviceMonitor:
+  enabled: true
+  namespace: "monitoring"
+  interval: 30s
+  path: /metrics
+  labels:
+    environment: staging
+  annotations:
+    prometheus.io/scrape: "true"
+
+# Persistent volumes - disabled for staging
+persistence:
+  enabled: false
+
+# Pod annotations and labels for staging
+podAnnotations:
+  environment: staging
+  tier: staging
+
+podLabels:
+  environment: staging
+  tier: staging
+
+# Node selector, tolerations, and affinity - basic for staging
+nodeSelector: {}
+tolerations: []
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 50  # Lower weight for staging
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - shepherd
+          topologyKey: kubernetes.io/hostname
+
+# RBAC configuration
+rbac:
+  create: true
+  serviceAccountName: ""
+
+# Webhook configuration for staging
+webhooks:
+  urls:
+  # Use environment-specific secrets via external Secret/SealedSecret provider
+  # Placeholders only; do NOT commit real webhook URLs
+  - https://hooks.slack.com/services/REDACTED/STAGING/WEBHOOK
+  # Add staging-specific webhook URLs
+
+# Log forwarding configuration for staging
+logging:
+  structured: true
+  forwarding:
+    # ELK Stack
+    elk:
+      enabled: false
+      endpoint: ""
+    
+    # CloudWatch for staging
+    cloudwatch:
+      enabled: false
+      region: us-west-2
+      logGroup: /k8s/shepherd-staging
+
+# Monitoring and observability for staging
+observability:
+  enabled: true
+  
+  # Metrics configuration
+  metrics:
+    enabled: true
+    path: /metrics
+    port: 5000
+    
+  # Enhanced logging for staging
+  logging:
+    format: json
+    level: DEBUG  # More verbose for debugging
+    
+  # Webhooks configuration
+  webhooks:
+    enabled: true
+    env:
+      WEBHOOK_ENABLED: "True"
+      WEBHOOK_EVENTS: "config.created,config.updated,config.rolled_back"
+      WEBHOOK_TIMEOUT: "10"
+      WEBHOOK_RETRY_ATTEMPTS: "3"
+      WEBHOOK_RETRY_DELAY: "1"
+
+# Development overrides (inherits from base but can be overridden)
+development:
+  enabled: false
