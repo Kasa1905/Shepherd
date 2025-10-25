@@ -198,7 +198,6 @@ jobs:
       uses: docker/setup-buildx-action@v3
       
     - name: Log in to Docker Hub
-      if: secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != ''
       uses: docker/login-action@v3
       with:
         username: ${{ secrets.DOCKER_USERNAME }}
@@ -292,7 +291,6 @@ jobs:
         version: 'v3.12.0'
         
     - name: Configure kubeconfig for staging
-      if: secrets.KUBECONFIG_STAGING != ''
       run: |
         mkdir -p ~/.kube
         echo '${{ secrets.KUBECONFIG_STAGING }}' | base64 -d > ~/.kube/config
@@ -343,7 +341,6 @@ jobs:
         version: 'v3.12.0'
         
     - name: Configure kubeconfig for production
-      if: secrets.KUBECONFIG_PRODUCTION != ''
       run: |
         mkdir -p ~/.kube
         echo '${{ secrets.KUBECONFIG_PRODUCTION }}' | base64 -d > ~/.kube/config
