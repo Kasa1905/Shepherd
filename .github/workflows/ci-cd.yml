@@ -1,5 +1,7 @@
 name: CI/CD Pipeline
 
+# Note: VS Code warnings about missing secrets/environments are expected until configured in GitHub Settings
+
 on:
   push:
     branches: [ main ]

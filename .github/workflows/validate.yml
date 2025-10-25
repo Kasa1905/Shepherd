@@ -1,0 +1,38 @@
+name: Quick Validation
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate:
+    name: Quick Syntax Validation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Verify Python syntax
+      run: |
+        python -m py_compile app.py database.py auth.py webhooks.py metrics.py logging_config.py
+        echo "✅ All Python files compile successfully"
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        echo "✅ Dependencies installed successfully"
+        
+    - name: Validate Helm charts
+      run: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        helm lint helm/shepherd
+        echo "✅ Helm chart validation passed"
