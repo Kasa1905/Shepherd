@@ -1194,7 +1194,8 @@ def list_webhooks():
 def test_webhook():
     """Send a test webhook event."""
     try:
-        data = request.get_json()
+        # Get JSON data (currently unused but reserved for future webhook customization)
+        _ = request.get_json()
         test_event = WebhookEvent(
             event_type="config.test",
             event_id=str(uuid.uuid4()),

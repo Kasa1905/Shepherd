@@ -371,7 +371,7 @@ def log_webhook_dispatch(
         from urllib.parse import urlparse
 
         webhook_domain = urlparse(webhook_url).netloc
-    except:
+    except Exception:
         webhook_domain = "unknown"
 
     context = {

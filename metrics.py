@@ -289,7 +289,7 @@ def track_request_metrics(func: Callable) -> Callable:
         if not _metrics_enabled:
             return func(*args, **kwargs)
 
-        start_time = time.time()
+        _ = time.time()  # Reserved for future latency tracking
 
         try:
             result = func(*args, **kwargs)
@@ -302,7 +302,7 @@ def track_request_metrics(func: Callable) -> Callable:
 
             return result
 
-        except Exception as e:
+        except Exception:
             # Track failed operation
             status = "error"
             raise
@@ -363,7 +363,7 @@ def track_db_operation(operation: str, collection: str) -> Callable:
 
                 return result
 
-            except Exception as e:
+            except Exception:
                 # Still record the operation attempt
                 mongodb_operations_total.labels(
                     operation=operation, collection=collection
@@ -622,8 +622,8 @@ class ShepherdCustomCollector:
             # Get real-time config counts
             metrics_data = config_manager.get_metrics_data()
 
-            # Example: Total configurations across all apps/environments
-            total_configs = sum(metrics_data.get("configs_by_app_env", {}).values())
+            # Example: Total configurations across all apps/environments (reserved for future use)
+            _ = sum(metrics_data.get("configs_by_app_env", {}).values())
 
             # Yield custom metric (example)
             # This is just an example - in practice, you might want to expose
