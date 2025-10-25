@@ -269,6 +269,11 @@ jobs:
       github.event_name == 'push' && 
       github.ref == 'refs/heads/main'
     
+    # Add permissions for GHCR package creation
+    permissions:
+      contents: read
+      packages: write
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
