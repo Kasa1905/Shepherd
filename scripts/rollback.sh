@@ -7,7 +7,8 @@ set -euo pipefail
 # Script configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-LOG_FILE="/var/log/shepherd-rollback.log"
+# Use workspace-relative log file for CI/CD compatibility
+LOG_FILE="${LOG_FILE:-${PROJECT_ROOT}/shepherd-rollback.log}"
 
 # Default values
 DEFAULT_NAMESPACE="default"
