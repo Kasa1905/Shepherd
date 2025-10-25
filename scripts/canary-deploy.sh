@@ -265,6 +265,20 @@ adjust_traffic() {
     
     # Scale stable deployment  
     kubectl scale deploy/shepherd --replicas="$stable_replicas" -n "$NAMESPACE"
+
+    # If an HPA exists for the stable deployment, pin it to the target stable replica count for this stage
+    if kubectl get hpa shepherd -n "$NAMESPACE" &>/dev/null; then
+        # Save original min/max if not already saved
+        if ! kubectl get hpa shepherd -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.canary\.shepherd\.io/original-min}' 2>/dev/null | grep -q "."; then
+            orig_min=$(kubectl get hpa shepherd -n "$NAMESPACE" -o jsonpath='{.spec.minReplicas}' 2>/dev/null || echo "1")
+            orig_max=$(kubectl get hpa shepherd -n "$NAMESPACE" -o jsonpath='{.spec.maxReplicas}' 2>/dev/null || echo "5")
+            kubectl annotate hpa shepherd -n "$NAMESPACE" \
+              canary.shepherd.io/original-min="$orig_min" \
+              canary.shepherd.io/original-max="$orig_max" --overwrite || true
+        fi
+        # Pin HPA by setting minReplicas=maxReplicas=stable_replicas for this stage
+        kubectl patch hpa shepherd -n "$NAMESPACE" --type merge -p "{\"spec\":{\"minReplicas\":$stable_replicas,\"maxReplicas\":$stable_replicas}}" || true
+    fi
     
     # Route to both versions by common label
     # Note: Without a service mesh, traffic weighting will be approximate by endpoint count
@@ -426,10 +440,17 @@ promote_canary() {
     # Restore service selector
     kubectl patch service shepherd -n "$NAMESPACE" -p '{"spec":{"selector":{"app.kubernetes.io/name":"shepherd"}}}'
     
-    # Restore HPA if it was suspended
+    # Restore HPA if it was suspended and un-pin min/max if pinned
     if kubectl get hpa shepherd -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.canary\.shepherd\.io/suspended}' 2>/dev/null | grep -q "true"; then
         log "Restoring HPA autoscaling"
         kubectl annotate hpa shepherd -n "$NAMESPACE" canary.shepherd.io/suspended-
+    fi
+    if kubectl get hpa shepherd -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.canary\.shepherd\.io/original-min}' 2>/dev/null | grep -q "."; then
+        orig_min=$(kubectl get hpa shepherd -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.canary\.shepherd\.io/original-min}')
+        orig_max=$(kubectl get hpa shepherd -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.canary\.shepherd\.io/original-max}')
+        log "Restoring HPA min/max to original values ($orig_min/$orig_max)"
+        kubectl patch hpa shepherd -n "$NAMESPACE" --type merge -p "{\"spec\":{\"minReplicas\":$orig_min,\"maxReplicas\":$orig_max}}" || true
+        kubectl annotate hpa shepherd -n "$NAMESPACE" canary.shepherd.io/original-min- canary.shepherd.io/original-max-
     fi
     
     log "🎉 Canary promotion completed successfully"
@@ -461,10 +482,17 @@ rollback_canary() {
     # Delete canary deployment
     kubectl delete deployment shepherd-canary -n "$NAMESPACE" --ignore-not-found=true
     
-    # Restore HPA if it was suspended
+    # Restore HPA if it was suspended and un-pin min/max if pinned
     if kubectl get hpa shepherd -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.canary\.shepherd\.io/suspended}' 2>/dev/null | grep -q "true"; then
         log "Restoring HPA autoscaling after rollback"
         kubectl annotate hpa shepherd -n "$NAMESPACE" canary.shepherd.io/suspended-
+    fi
+    if kubectl get hpa shepherd -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.canary\.shepherd\.io/original-min}' 2>/dev/null | grep -q "."; then
+        orig_min=$(kubectl get hpa shepherd -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.canary\.shepherd\.io/original-min}')
+        orig_max=$(kubectl get hpa shepherd -n "$NAMESPACE" -o jsonpath='{.metadata.annotations.canary\.shepherd\.io/original-max}')
+        log "Restoring HPA min/max to original values after rollback ($orig_min/$orig_max)"
+        kubectl patch hpa shepherd -n "$NAMESPACE" --type merge -p "{\"spec\":{\"minReplicas\":$orig_min,\"maxReplicas\":$orig_max}}" || true
+        kubectl annotate hpa shepherd -n "$NAMESPACE" canary.shepherd.io/original-min- canary.shepherd.io/original-max-
     fi
     
     # Log rollback event
