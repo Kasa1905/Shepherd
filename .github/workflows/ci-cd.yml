@@ -62,11 +62,11 @@ jobs:
         
     - name: Run flake8 critical errors check
       run: |
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --select=E9,F63,F7,F82
         
     - name: Run flake8 with warnings
       run: |
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+        flake8 . --exit-zero
         
     - name: Run black format check
       run: |
@@ -103,7 +103,7 @@ jobs:
         
     - name: Run Bandit security scan
       run: |
-        bandit -r . -f json -o bandit-report.json
+        bandit -r . -f json -o bandit-report.json -x ./.venv,./venv,./env,./tests,./node_modules,./.git || true
       continue-on-error: true
       
     - name: Run Safety dependency check

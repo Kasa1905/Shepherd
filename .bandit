@@ -1,22 +1,10 @@
-exclude_dirs:
-  - /venv/
-  - /env/
-  - /.venv/
-  - /tests/
-  - /test_*.py
-  - /__pycache__/
+[bandit]
+exclude_dirs = .venv,venv,env,tests,__pycache__,.git,node_modules
 
-skips:
-  - B101  # Skip assert_used (asserts are fine in tests)
-  - B601  # Skip paramiko_calls (if not using paramiko)
+skips = B101,B601
+
+# B101: Skip assert_used (asserts are fine in tests)
+# B601: Skip paramiko_calls (if not using paramiko)
 
 # Include all default Bandit security tests
 # Focus on: SQL injection, hardcoded passwords, insecure functions, weak crypto
-
-# Report severity levels
-# Options: low, medium, high
-# Default: low (reports all)
-
-# Report confidence levels  
-# Options: low, medium, high
-# Default: low (reports all)
