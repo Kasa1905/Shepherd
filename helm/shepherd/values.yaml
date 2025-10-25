@@ -29,8 +29,7 @@ app:
     revisionHistoryLimit: 10   # Keep last 10 revisions for rollback
   
   # Deployment annotations for change tracking
-  deploymentAnnotations:
-    deployment.kubernetes.io/revision: "{{ .Release.Revision }}"
+  deploymentAnnotations: {}
   
   # Environment variables
   env:
