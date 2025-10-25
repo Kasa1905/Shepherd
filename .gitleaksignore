@@ -1,0 +1,27 @@
+# Gitleaks Ignore File
+# This file specifies patterns that should be ignored by secret scanning
+# These are intentional examples, templates, and documentation
+
+# Example passwords in documentation (not real secrets)
+README.md:YourSecurePassword123!
+terraform/aws/README.md:YourSecurePassword123!
+
+# Template/placeholder values in .env.example (not real secrets)
+.env.example:your-secret-key-change-in-production
+.env.example:your-flask-secret-key-change-in-production
+.env.example:dev-secret-key-change-in-production
+
+# Setup scripts with example/default values
+docker-compose.local.yml:dev-secret-key-change-in-production
+setup-local.sh:admin123
+setup-local.bat:admin123
+
+# Documentation files with example credentials
+GETTING-STARTED.md:admin123
+QUICKSTART.md:admin123
+README-SIMPLE.md:admin123
+USER-READY-SUMMARY.md:admin123
+DOCUMENTATION.md:admin123
+
+# Git commit messages and change logs may reference old secrets
+# But they are not actual secrets in the codebase

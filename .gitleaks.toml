@@ -1,0 +1,57 @@
+# Gitleaks Configuration
+# https://github.com/gitleaks/gitleaks
+
+title = "Shepherd CMS Gitleaks Configuration"
+
+# Global allowlist - paths that should never be scanned
+[allowlist]
+description = "Allowlist for known safe patterns"
+paths = [
+    # Documentation and example files
+    '''\.env\.example$''',
+    '''README.*\.md$''',
+    '''QUICKSTART\.md$''',
+    '''GETTING-STARTED\.md$''',
+    '''DOCUMENTATION\.md$''',
+    '''USER-READY-SUMMARY\.md$''',
+    
+    # Test files
+    '''test_.*\.py$''',
+    '''.*_test\.py$''',
+    
+    # Docker compose files (contain example/dev secrets only)
+    '''docker-compose\.local\.yml$''',
+]
+
+# Specific patterns to ignore
+regexes = [
+    # Ignore example/placeholder secrets
+    '''your-secret-key-change-in-production''',
+    '''your-flask-secret-key-change-in-production''',
+    '''dev-secret-key-change-in-production''',
+    '''change-in-production''',
+    '''change_me''',
+    '''YourSecurePassword123!''',
+    
+    # Ignore default demo credentials
+    '''admin123''',
+    '''admin:admin123''',
+    
+    # Ignore placeholder values
+    '''<.*>''',
+    '''YOUR_.*''',
+    '''CHANGE_THIS''',
+    '''REPLACE_WITH''',
+]
+
+# Stopwords - these indicate the secret is a placeholder
+stopwords = [
+    'example',
+    'placeholder',
+    'sample',
+    'your-',
+    'change-this',
+    'replace-with',
+    'todo',
+    'fixme',
+]
