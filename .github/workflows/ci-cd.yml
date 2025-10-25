@@ -62,11 +62,11 @@ jobs:
         
     - name: Run flake8 critical errors check
       run: |
-        flake8 . --select=E9,F63,F7,F82
+        python -m flake8 . --select=E9,F63,F7,F82
         
     - name: Run flake8 with warnings
       run: |
-        flake8 . --exit-zero
+        python -m flake8 . --exit-zero
         
     - name: Run black format check
       run: |
@@ -163,12 +163,12 @@ jobs:
         
     - name: Set environment variables for tests
       run: |
-        echo "MONGODB_URI=mongodb://localhost:27017/" >> $GITHUB_ENV
+        echo "MONGODB_URI=mongodb://localhost:27017/?directConnection=true" >> $GITHUB_ENV
         echo "DATABASE_NAME=test_shepherd" >> $GITHUB_ENV
         
     - name: Run pytest with coverage
       run: |
-        pytest test_shepherd.py -v --cov=. --cov-report=xml --cov-report=html
+        pytest test_shepherd.py -v --cov=. --cov-report=xml --cov-report=html --junitxml=pytest-results.xml
         
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v4
@@ -185,6 +185,13 @@ jobs:
       with:
         name: coverage-report
         path: htmlcov/
+
+    - name: Upload pytest results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: pytest-results
+        path: pytest-results.xml
 
   build:
     name: Build Docker Image
