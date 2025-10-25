@@ -165,6 +165,19 @@ jobs:
       run: |
         echo "MONGODB_URI=mongodb://localhost:27017/?directConnection=true" >> $GITHUB_ENV
         echo "DATABASE_NAME=test_shepherd" >> $GITHUB_ENV
+    
+    - name: Wait for MongoDB (port check)
+      shell: bash
+      run: |
+        echo "Waiting for MongoDB to accept TCP connections on 27017..."
+        for i in {1..60}; do
+          if (echo > /dev/tcp/localhost/27017) >/dev/null 2>&1; then
+            echo "✅ MongoDB is listening"
+            break
+          fi
+          echo "Attempt $i: MongoDB not ready yet"
+          sleep 2
+        done
         
     - name: Run pytest with coverage
       run: |

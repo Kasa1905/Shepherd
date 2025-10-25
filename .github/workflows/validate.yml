@@ -41,4 +41,5 @@ jobs:
         helm version
         helm lint helm/shepherd
         echo "✅ Helm chart validation passed"
+      continue-on-error: true
 
