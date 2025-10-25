@@ -1,0 +1,112 @@
+version: '3.8'
+
+# ==============================================================================
+# Shepherd CMS - Simple Local Development Setup
+# ==============================================================================
+# This is a simplified Docker Compose configuration for local development.
+# No replica sets, no complex authentication - just MongoDB and the app.
+#
+# Quick Start:
+#   1. Copy .env.example to .env (or use defaults)
+#   2. Run: docker-compose -f docker-compose.local.yml up
+#   3. Access: http://localhost:5000
+#   4. Default login: admin / admin123
+#
+# ==============================================================================
+
+services:
+  # MongoDB Database (Standalone - Simple Setup)
+  mongodb:
+    image: mongo:7.0
+    container_name: shepherd-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      # Simple setup - no authentication required for local dev
+      MONGO_INITDB_DATABASE: shepherd
+    volumes:
+      # Persistent data storage
+      - mongodb-data:/data/db
+      # Optional: Mount init script for default data
+      - ./init-mongo-simple.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    networks:
+      - shepherd-network
+    restart: unless-stopped
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/shepherd --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # Shepherd Flask Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shepherd-app
+    ports:
+      - "5000:5000"
+    environment:
+      # Application settings
+      FLASK_ENV: ${FLASK_ENV:-development}
+      FLASK_DEBUG: ${FLASK_DEBUG:-True}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      
+      # Database connection (simple standalone MongoDB)
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongodb:27017/}
+      DATABASE_NAME: ${DATABASE_NAME:-shepherd}
+      
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      
+      # Features
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      WEBHOOKS_ENABLED: ${WEBHOOKS_ENABLED:-true}
+      
+      # Default admin user
+      DEFAULT_ADMIN_USERNAME: ${DEFAULT_ADMIN_USERNAME:-admin}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-admin123}
+      DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:-admin@example.com}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - shepherd-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    volumes:
+      # Mount logs for easy access
+      - ./logs:/app/logs
+      # Optional: Mount code for hot-reload in development
+      # - ./app.py:/app/app.py
+      # - ./database.py:/app/database.py
+      # - ./auth.py:/app/auth.py
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+networks:
+  shepherd-network:
+    driver: bridge
+    name: shepherd-network
+
+volumes:
+  mongodb-data:
+    name: shepherd-mongodb-data
+    driver: local
