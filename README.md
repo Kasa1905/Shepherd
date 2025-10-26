@@ -1,243 +1,107 @@
-# Shepherd Configuration Management System
+# Shepherd — Configuration Management, made simple
 
 [![CI/CD Pipeline](https://github.com/Kasa1905/Shepherd/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/Kasa1905/Shepherd/actions/workflows/ci-cd.yml)
 
-A robust configuration management system with versioning capabilities, built with Flask and MongoDB. Shepherd provides both REST API endpoints and a responsive web interface for managing application configurations across different environments.
+A small, practical configuration-management web app and API built with Flask and MongoDB. Shepherd helps teams store, version, inspect, and roll back configuration safely across environments (dev, staging, prod).
 
-## 🌟 Features
+Why you'll like Shepherd:
+- Easy local setup with Docker Compose
+- Simple REST API and a usable web UI
+- Built-in backup verification and deployment tooling
+- Tests and CI included so you can contribute safely
 
-- **Configuration Management**: Store and manage application configurations with versioning
-- **Environment Support**: Organize configurations by environment (development, staging, production)
-- **Version Control**: Automatic versioning with complete history tracking
-- **Metadata Tracking**: Track who made changes and why with updated_by and change_notes fields
-- **Create UI**: Intuitive web interface for creating configurations with schema templates
-- **Version Comparison**: Visual diff tool to compare any two configuration versions
-- **Rollback Functionality**: Easy rollback to any previous configuration version
-- **REST API**: Comprehensive API for programmatic access with metadata support
-- **Web Interface**: Responsive web UI built with Pico CSS
-- **Role-Based Access**: Support for viewer, editor, and admin roles
-- **Docker Support**: Production-ready containerization
-- **Search & Query**: Advanced configuration discovery capabilities
-- **Comprehensive Testing**: Full test suite with pytest including Phase 8 features
-- **📊 Observability & Monitoring**: Comprehensive Phase 9 observability features
-  - **Structured Logging**: JSON-formatted logs with request correlation and context
-  - **Prometheus Metrics**: Database operations, HTTP requests, and application performance metrics
-  - **Webhook System**: Event-driven notifications with retry mechanisms and delivery tracking
-  - **Health Monitoring**: Application health checks and system status endpoints
-  - **Infrastructure as Code**: Terraform and Helm templates with built-in observability
+---
 
-## 📋 Table of Contents
+## Quick links
 
-- [Quick Start](#quick-start)
-- [Zero-Downtime Deployments](#-zero-downtime-deployments)
-- [High Availability & Disaster Recovery](#️-high-availability--disaster-recovery)
-- [Docker Deployment](#docker-deployment)
-- [Local Development](#local-development)
-- [Observability & Monitoring](#-observability--monitoring)
-  - [Structured Logging](#structured-logging)
-  - [Prometheus Metrics](#prometheus-metrics)
-  - [Webhook System](#webhook-system)
-  - [Health Monitoring](#health-monitoring)
-- [API Reference](#api-reference)
-- [Web Interface](#web-interface)
-- [Configuration](#configuration)
-- [Testing](#testing)
-- [Infrastructure Templates](#-infrastructure-templates)
-  - [Terraform (AWS)](#terraform-aws)
-  - [Helm Chart](#helm-chart)
-- [CI/CD Pipeline](#cicd-pipeline)
-- [Production Deployment](#production-deployment)
-- [Contributing](#contributing)
+- Quick start: run locally with Docker Compose
+- Docs: `docs/` (deployment, backup, DR, troubleshooting)
+- CI: GitHub Actions workflow `ci-cd.yml`
 
-## 🚀 Quick Start
+## Quick Start — Local (recommended)
 
-### Using Docker (Recommended)
+Prereqs: Docker & Docker Compose
 
-1. **Clone the repository**:
-   ```bash
-   git clone <repository-url>
-   cd shepherd
-   ```
+1. Clone and enter the repo
 
-2. **Start the services**:
-   ```bash
-   docker-compose up -d
-   ```
-
-3. **Access the application**:
-   - Web Interface: http://localhost:5000
-   - API: http://localhost:5000/api
-   - MongoDB Admin (optional): http://localhost:8081
-
-4. **Verify installation**:
-   ```bash
-   curl http://localhost:5000/api/health -H "X-API-Key: <your-api-key>"
-   ```
-
-## � Zero-Downtime Deployments
-
-Shepherd supports multiple deployment strategies for zero-downtime operations in production environments, ensuring continuous service availability during updates and maintenance.
-
-### Deployment Strategies
-
-| Strategy | Use Case | Downtime | Rollback Speed | Resource Overhead |
-|----------|----------|----------|----------------|-------------------|
-| **Rolling Update** | Routine updates, bug fixes | Zero | Fast (2-5 min) | Low (1x resources) |
-| **Blue/Green** | Major versions, breaking changes | Zero | Instant (<30s) | High (2x resources) |
-| **Canary** | High-risk changes, performance testing | Zero | Fast (1-2 min) | Medium (1.1-1.5x resources) |
-
-### Quick Deployment Examples
-
-#### Rolling Updates (Default)
 ```bash
-# Deploy to staging
-./scripts/deploy.sh \
-  --namespace staging \
-  --values helm/shepherd/values-staging.yaml
-
-# Deploy to production
-./scripts/deploy.sh \
-  --namespace production \
-  --values helm/shepherd/values-prod.yaml
+git clone https://github.com/Kasa1905/Shepherd.git
+cd Shepherd
 ```
 
-#### Blue/Green Deployment
+2. Start the app and MongoDB
+
 ```bash
-# Zero-downtime deployment with instant rollback capability
-./scripts/deploy-blue-green.sh \
-  --namespace production \
-  --image shepherd:v2.0.0
+docker compose up -d
 ```
 
-#### Canary Deployment
+3. Open the app
+
+- Web UI: http://localhost:5000
+- API:  http://localhost:5000/api
+
+4. Run tests
+
 ```bash
-# Gradual rollout with metrics validation
-./scripts/canary-deploy.sh \
-  --namespace production \
-  --image shepherd:v2.1.0 \
-  --stages "10,25,50,100"
+python -m pytest -q
 ```
 
-#### Emergency Rollback
+---
+
+## Run specific tasks
+
+- Start only MongoDB (for debugging): `docker compose up -d mongo-primary`
+- Initialize MongoDB replica set: `docker compose up mongo-init`
+- Create a local backup: `./scripts/backup-verify.sh verify-docker`
+
+---
+
+## CI / Deployments
+
+This repository includes a GitHub Actions pipeline (`.github/workflows/ci-cd.yml`) that runs linting, tests, security scans, builds a Docker image and pushes it to GitHub Container Registry.
+
+Deployment behavior:
+- **Staging**: runs automatically on pushes to `main` (if configured). If the `KUBECONFIG_STAGING` secret is missing, the job will show a clear warning and skip deployment.
+- **Production**: manual via `workflow_dispatch` (GitHub UI or `gh workflow run`).
+
+To enable staging deployments:
+
+1. Encode your kubeconfig
+
 ```bash
-# Instant rollback to previous version
-./scripts/rollback.sh \
-  --namespace production \
-  --reason "Performance issue detected"
+cat ~/.kube/config | base64 | tr -d '\n'
 ```
 
-### Automated CI/CD Integration
+2. Add a repository secret named `KUBECONFIG_STAGING` with the encoded value:
 
-Deployments are integrated with GitHub Actions for automated staging deployments and manual production deployments:
+- Go to: Settings → Secrets and variables → Actions → New repository secret
+- Name: `KUBECONFIG_STAGING`
+- Value: (paste the base64 output)
 
-#### Trigger Production Deployment
-```bash
-# Via GitHub CLI
-gh workflow run ci-cd.yml \
-  --ref main \
-  -f deployment_strategy=blue-green \
-  -f image_tag=v2.0.0
+Once added, the staging deploy step will pick it up on the next push to `main`.
 
-# Via GitHub Actions UI
-# 1. Go to Actions tab
-# 2. Select "CI/CD Pipeline"
-# 3. Click "Run workflow"
-# 4. Select deployment strategy
-```
+---
 
-#### Emergency Rollback via CI/CD
-```bash
-gh workflow run rollback.yml \
-  --ref main \
-  -f environment=production \
-  -f reason="Critical issue detected"
-```
+## Troubleshooting
 
-### Deployment Features
+- If the staging job prints: `KUBECONFIG_STAGING secret not found. Skipping deployment.` — add the secret as described above.
+- If Docker Compose verification times out in CI, check the uploaded `backup-verification-docker-results` artifact for `scripts/backup-verify.log` and increase timeouts locally to diagnose slow startup.
 
-- ✅ **Pre-flight Validation**: Comprehensive checks before deployment
-- ✅ **Health Monitoring**: Real-time health validation during deployments
-- ✅ **Automatic Rollback**: Triggers on health check failures or error thresholds
-- ✅ **Smoke Testing**: Validates functionality before traffic switching
-- ✅ **Metrics Monitoring**: Error rate and performance tracking during canary deployments
-- ✅ **Traffic Shifting**: Gradual traffic migration with configurable stages
-- ✅ **Environment Parity**: Consistent deployment across staging and production
+---
 
-### Documentation & Troubleshooting
+## Contributing
 
-- **[Comprehensive Deployment Guide](docs/deployment-guide.md)**: Complete procedures for all strategies
-- **[Troubleshooting Guide](docs/troubleshooting-deployments.md)**: Systematic issue resolution
-- **[Emergency Procedures](docs/deployment-guide.md#emergency-procedures)**: Critical incident response
+We welcome contributions! A few tips:
 
-### Prerequisites
+- Run tests locally before making PRs (`python -m pytest`)
+- Keep changes focused and document them in the PR description
+- If you modify infrastructure (Helm/Terraform), include testing notes in the PR
 
-For zero-downtime deployments, ensure:
-- Kubernetes cluster with appropriate RBAC permissions
-- Helm 3.8+ installed and configured
-- kubectl configured for target clusters
-- Proper secrets management (MongoDB credentials, API keys)
-- Monitoring and alerting configured (optional but recommended)
+See `CONTRIBUTING.md` for full guidelines.
 
-## �🛡️ High Availability & Disaster Recovery
+---
 
-Shepherd includes enterprise-grade HA/DR capabilities across all deployment environments with comprehensive backup and monitoring solutions.
-
-### HA/DR Overview
-
-| Deployment | Architecture | RTO Target | RPO Target | Backup Retention |
-|------------|-------------|------------|------------|------------------|
-| Docker Compose | 3-node MongoDB replica set | 60 minutes | 15 minutes | 30 days |
-| AWS | DocumentDB multi-AZ cluster | 60 minutes | 15 minutes | 30 days |
-| Kubernetes | MongoDB StatefulSet (3 replicas) | 60 minutes | 15 minutes | 30 days |
-
-### Key Features
-
-- **Automated Replica Set Management**: Self-healing MongoDB clusters
-- **Cross-Region Backup Replication**: AWS DocumentDB with automated verification
-- **Health Monitoring**: Application and database health checks with failover detection
-- **Automated Backup Verification**: Lambda-based backup testing and validation
-- **Disaster Recovery Testing**: Automated DR testing scripts and procedures
-
-### Quick HA Setup
-
-#### Docker Compose (Development/Testing)
-```bash
-# Start 3-node replica set
-docker-compose up -d
-
-# Verify replica set status
-docker exec mongo-primary mongosh --eval "rs.status()"
-```
-
-#### AWS Production
-```bash
-# Deploy with Terraform
-cd terraform/aws
-terraform init
-terraform plan -var="documentdb_backup_retention_period=30"
-terraform apply
-```
-
-#### Kubernetes Production
-```bash
-# Deploy with Helm
-helm install shepherd ./helm/shepherd \
-  --set mongodb.internal.enabled=true \
-  --set mongodb.internal.replicaSet.enabled=true \
-  --set backup.enabled=true
-```
-
-### Disaster Recovery Testing
-```bash
-# Run automated DR tests
-./scripts/test-dr.sh
-
-# Check results
-cat /tmp/shepherd-dr-results-*.json
-```
-
-### Documentation
-- **[Disaster Recovery Runbook](docs/disaster-recovery.md)**: Complete DR procedures
+If you'd like, I can also create a simplified `README-SIMPLE.md` with an even shorter onboarding flow for non-technical users. Would you like that?
 - **[Backup Procedures](docs/backup-procedures.md)**: Backup and restore operations
 - **[Monitoring Guide](docs/monitoring.md)**: HA monitoring setup
 
