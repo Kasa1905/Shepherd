@@ -103,29 +103,29 @@ jobs:
 
       - name: Start MongoDB replica set
         run: |
-          echo "🚀 Starting MongoDB replica set for backup verification..."
-          docker compose up -d mongo-primary mongo-secondary-1 mongo-secondary-2
+          echo "🚀 Starting MongoDB replica set for backup verification..." | tee -a scripts/backup-verify.log
+          docker compose up -d mongo-primary mongo-secondary-1 mongo-secondary-2 2>&1 | tee -a scripts/backup-verify.log
           
-          # Wait for containers to be ready
-          timeout 180 bash -c '
+          # Wait for containers to be ready (longer timeout to avoid premature failures)
+          timeout 300 bash -c '
             until docker ps --filter "name=mongo-primary" --filter "health=healthy" --format "table {{.Names}}" | grep -q mongo-primary; do
-              echo "Waiting for MongoDB primary to be healthy..."
+              echo "Waiting for MongoDB primary to be healthy..." | tee -a scripts/backup-verify.log
               sleep 5
             done
           '
 
       - name: Initialize replica set
         run: |
-          echo "🔧 Initializing MongoDB replica set..."
-          docker compose up mongo-init
+          echo "🔧 Initializing MongoDB replica set..." | tee -a scripts/backup-verify.log
+          docker compose up mongo-init 2>&1 | tee -a scripts/backup-verify.log
           
-          # Wait for initialization to complete
-          docker compose logs mongo-init
+          # Wait for initialization to complete and capture logs
+          docker compose logs mongo-init 2>&1 | tee -a scripts/backup-verify.log
           
           # Verify replica set status
-          timeout 60 bash -c '
+          timeout 120 bash -c '
             until docker exec mongo-primary mongosh --eval "rs.status()" --quiet | grep -q "PRIMARY"; do
-              echo "Waiting for primary election..."
+              echo "Waiting for primary election..." | tee -a scripts/backup-verify.log
               sleep 5
             done
           '
@@ -164,57 +164,65 @@ jobs:
 
       - name: Create backup for verification
         run: |
-          echo "💾 Creating backup for verification..."
-          
+          echo "💾 Creating backup for verification..." | tee -a scripts/backup-verify.log
+
           # Create backup directory
           sudo mkdir -p ${{ env.BACKUP_DIR }}
           sudo chmod 755 ${{ env.BACKUP_DIR }}
-          
+
           # Create backup
           backup_name="github_actions_backup_$(date +%Y%m%d_%H%M%S)"
-          echo "Creating backup: $backup_name"
-          
+          echo "Creating backup: $backup_name" | tee -a scripts/backup-verify.log
+
           docker exec mongo-primary mongodump \
             --host mongo-primary:27017 \
             --db shepherd_cms \
-            --out "/tmp/$backup_name"
-          
+            --out "/tmp/$backup_name" 2>&1 | tee -a scripts/backup-verify.log
+
           # Copy backup from container to host
-          docker cp mongo-primary:/tmp/$backup_name ${{ env.BACKUP_DIR }}/
-          
+          docker cp mongo-primary:/tmp/$backup_name ${{ env.BACKUP_DIR }}/ 2>&1 | tee -a scripts/backup-verify.log
+
           # Compress backup
-          tar -czf ${{ env.BACKUP_DIR }}/$backup_name.tar.gz -C ${{ env.BACKUP_DIR }} $backup_name
+          tar -czf ${{ env.BACKUP_DIR }}/$backup_name.tar.gz -C ${{ env.BACKUP_DIR }} $backup_name 2>&1 | tee -a scripts/backup-verify.log
           rm -rf ${{ env.BACKUP_DIR }}/$backup_name
-          
-          echo "✅ Backup created: $backup_name.tar.gz"
+
+          echo "✅ Backup created: $backup_name.tar.gz" | tee -a scripts/backup-verify.log
           echo "BACKUP_NAME=$backup_name" >> $GITHUB_ENV
 
       - name: Run backup verification script
         run: |
-          echo "🔍 Running backup verification script..."
-          
+          echo "🔍 Running backup verification script..." | tee -a scripts/backup-verify.log
+
           # Make script executable
           chmod +x scripts/backup-verify.sh
-          
+
+          # Ensure scripts directory and log files exist
+          mkdir -p scripts
+          touch scripts/backup-verify.log
+          touch scripts/backup-status-0.txt
+
           # Set environment variables for the script
           export BACKUP_DIR="${{ env.BACKUP_DIR }}"
           export MONGODB_HOST="${{ env.MONGODB_HOST }}"
           export DATABASE_NAME="${{ env.DATABASE_NAME }}"
           export RETENTION_DAYS="${{ env.BACKUP_RETENTION_DAYS }}"
           export ENVIRONMENTS="docker-compose"
-          
-          # Run verification based on input type
+
+          # Use pipefail so tee returns non-zero if the script fails
+          set -o pipefail
+
+          # Run verification based on input type and capture logs
           if [[ "${{ github.event.inputs.verification_type }}" == "restore-test" ]]; then
-            echo "Running restore test..."
-            ./scripts/backup-verify.sh test-restore
+            echo "Running restore test..." | tee -a scripts/backup-verify.log
+            ./scripts/backup-verify.sh test-restore 2>&1 | tee -a scripts/backup-verify.log
           elif [[ "${{ github.event.inputs.verification_type }}" == "comprehensive" ]]; then
-            echo "Running comprehensive verification..."
-            ./scripts/backup-verify.sh verify
-            ./scripts/backup-verify.sh test-restore
-            ./scripts/backup-verify.sh report
+            echo "Running comprehensive verification..." | tee -a scripts/backup-verify.log
+            ./scripts/backup-verify.sh verify 2>&1 | tee -a scripts/backup-verify.log
+            ./scripts/backup-verify.sh test-restore 2>&1 | tee -a scripts/backup-verify.log
+            ./scripts/backup-verify.sh report 2>&1 | tee -a scripts/backup-verify.log
           else
-            echo "Running basic verification..."
-            ./scripts/backup-verify.sh verify-docker
+            echo "Running basic verification..." | tee -a scripts/backup-verify.log
+            ./scripts/backup-verify.sh verify-docker 2>&1 | tee -a scripts/backup-verify.log
           fi
 
       - name: Verify restored data integrity
@@ -240,6 +248,13 @@ jobs:
         run: |
           echo "🧹 Cleaning up old backups..."
           ./scripts/backup-verify.sh cleanup
+
+      - name: Ensure docker verification artifacts exist
+        if: always()
+        run: |
+          mkdir -p scripts || true
+          touch scripts/backup-verify.log || true
+          ls scripts/backup-status-*.txt 2>/dev/null || touch scripts/backup-status-0.txt || true
 
       - name: Upload backup verification results
         if: always()
@@ -317,6 +332,13 @@ jobs:
             ./scripts/backup-verify.sh verify-k8s
           fi
 
+      - name: Ensure k8s verification artifacts exist
+        if: always()
+        run: |
+          mkdir -p scripts || true
+          touch scripts/backup-verify.log || true
+          ls scripts/backup-status-*.txt 2>/dev/null || touch scripts/backup-status-0.txt || true
+
       - name: Upload Kubernetes verification results
         if: always()
         uses: actions/upload-artifact@v4
@@ -337,6 +359,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Check for AWS credentials
+        run: |
+          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] || [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "::warning::AWS credentials not found. Skipping AWS backup verification."
+            echo "To enable AWS verification, add AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY as repository secrets."
+            exit 1
+          fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -390,6 +420,13 @@ jobs:
           else
             echo "⚠️ No backups found in DR region - check replication configuration"
           fi
+
+      - name: Ensure AWS verification artifacts exist
+        if: always()
+        run: |
+          mkdir -p scripts || true
+          touch scripts/backup-verify.log || true
+          ls scripts/backup-status-*.txt 2>/dev/null || touch scripts/backup-status-0.txt || true
 
       - name: Upload AWS verification results
         if: always()
