@@ -76,6 +76,12 @@ Thumbs.db
 *.log
 logs/
 
+# Security reports and build artifacts
+bandit-report.json
+coverage.xml
+*.sarif
+security-reports/
+
 # Database files
 *.db
 *.sqlite3
